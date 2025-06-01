@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/airbnb/airbnb.iml" filepath="$PROJECT_DIR$/airbnb/airbnb.iml" />
+      <module fileurl="file://$PROJECT_DIR$/coupang/coupang.iml" filepath="$PROJECT_DIR$/coupang/coupang.iml" />
+      <module fileurl="file://$PROJECT_DIR$/dropbox/dropbox.iml" filepath="$PROJECT_DIR$/dropbox/dropbox.iml" />
+      <module fileurl="file://$PROJECT_DIR$/meta/meta.iml" filepath="$PROJECT_DIR$/meta/meta.iml" />
+      <module fileurl="file://$PROJECT_DIR$/mianshi.iml" filepath="$PROJECT_DIR$/mianshi.iml" />
+      <module fileurl="file://$PROJECT_DIR$/notion/notion.iml" filepath="$PROJECT_DIR$/notion/notion.iml" />
+      <module fileurl="file://$PROJECT_DIR$/openai/openai.iml" filepath="$PROJECT_DIR$/openai/openai.iml" />
+      <module fileurl="file://$PROJECT_DIR$/rippling/rippling.iml" filepath="$PROJECT_DIR$/rippling/rippling.iml" />
+    </modules>
+  </component>
+</project>
