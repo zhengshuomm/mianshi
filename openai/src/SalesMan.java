@@ -161,6 +161,14 @@ class GridPathFinder {
         };
         System.out.println("Example 4: " + format(finder.findShortestPath(grid4)));
 
+
+        /*
+        Example 1: [[0, 1], [0, 0], [1, 0], [2, 0]]
+        Example 2: [[0, 0], [0, 1], [0, 2]]
+        Example 3: [[0, 0], [1, 0], [2, 0], [2, 1], [2, 2], [1, 2]]
+        Example 4: [[0, 0], [1, 0], [2, 0], [1, 0], [1, 1], [2, 1], [2, 2], [1, 2], [0, 2]]
+         */
+
     }
 
     private static String format(List<int[]> path) {
