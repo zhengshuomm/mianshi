@@ -133,6 +133,7 @@ class Main {
 
         // Test 1: Simple fixed type
         Function f1 = new Function(List.of(new TypeNode("int")), new TypeNode("int"));
+        System.out.println(f1);
         System.out.println(TypeResolver.getReturnType(f1, List.of(new TypeNode("int")))); // int
 
         // Test 2: Basic generic

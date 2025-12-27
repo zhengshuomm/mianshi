@@ -33,21 +33,21 @@ public class ExcelSheet {
         spreadsheet.setCell("C1", "=C2");
         spreadsheet.setCell("C2", "=C3");
 
-        System.out.println("A1:" + spreadsheet.getCell("A1"));
-        System.out.println("A2:" + spreadsheet.getCell("A2"));
-        System.out.println("B2:" + spreadsheet.getCell("B2"));
-        System.out.println("B1:" + spreadsheet.getCell("B1"));
+        System.out.println("A1:" + spreadsheet.getCell("A1")); //1
+        System.out.println("A2:" + spreadsheet.getCell("A2")); //11
+        System.out.println("B2:" + spreadsheet.getCell("B2")); //12
+        System.out.println("B1:" + spreadsheet.getCell("B1")); //14
 
         try {
             spreadsheet.setCell("C3", "=C1");
         } catch (Exception e) {
-            e.printStackTrace();
+            e.printStackTrace(); // circle
         }
 
         try {
             spreadsheet.setCell("A1", "=B1");
         } catch (Exception e) {
-            e.printStackTrace();
+            e.printStackTrace(); // circle
         }
 
     }
@@ -69,6 +69,8 @@ class Node {
     // a node"s downstream node, the update of current node will affect downstream.
     Set<Node> downNodes = new HashSet<>();
     int value = 0;
+
+    boolean isExp = false;
 
     public Node(String name){
         this.name = name;
@@ -148,5 +150,53 @@ class SpreadSheet {
 
         visiting.remove(node);
         return false;
+    }
+}
+
+
+class SpreadSheet1 {
+    Map<String, Node> map = new HashMap<>();
+
+    public void setCell(String name, String exp) {
+        map.putIfAbsent(name, new Node(name));
+        Node node = map.get(name);
+
+        // remove it"s upstream node and remove down stream node from it"s upstream node
+        for (Node up : node.upNodes) {
+            up.downNodes.remove(node);
+        }
+        node.upNodes.clear();
+
+        int oldVal = node.value;
+        node.value = 0;
+        if (exp.startsWith("=")) {
+            // get all node names
+            String[] names = exp.substring(1).split("\\+");
+
+            for (String upName : names) {
+                upName = upName.strip();
+                map.putIfAbsent(upName, new Node(upName));
+                node.upNodes.add(map.get(upName));
+                map.get(upName).downNodes.add(node);
+//                node.value = node.value + map.get(upName).value;
+            }
+            node.isExp = true;
+
+        } else {
+            node.value = Integer.parseInt(exp);
+        }
+
+    }
+
+    public int getCell(String name) {
+        if (!map.containsKey(name)) return 0;
+        Node node = map.get(name);
+        if (!node.isExp) return node.value;
+
+        int value = 0;
+        for (Node up: node.upNodes) {
+            value += getCell(up.name);
+        }
+        return value;
     }
 }

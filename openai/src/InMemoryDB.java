@@ -63,7 +63,7 @@ public class InMemoryDB {
             boolean m = compare(row, column, op, value);
             if (logic.equals("AND")) {
                 if (!m) return false;
-            } else {
+            } else if (m){
                 return true;
             }
         }

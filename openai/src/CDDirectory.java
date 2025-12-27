@@ -12,7 +12,18 @@ cd(/foo/bar, baz, {/foo/bar: /abc}) = /abc/baz
 cd(/foo/bar, baz, {/foo/bar: /abc, /abc: /bcd, /bcd/baz: /xyz}) = /xyz
 dictionary 里有可能有短匹配和长匹配，应该先匹配长的(more specific), 比如：
 cd(/foo/bar, baz, {/foo/bar: /abc, /foo/bar/baz: /xyz}) = /xyz
-要判断dictionary里是
+要判断dictionary里是否有循环
+
+
+
+
+疑问
+1. 不知道给定的path里第一个是不是结尾有 ‘/’, 如果没有的话自己要check一下加上
+2. 第二问不知道～ home directory是在哪里出现，在string开始还是中间某个部分。是在第一个string还是第二个string
+
+我做的时候assume结尾有可能没有‘/’, 因为不知道～出现在哪所以没做这问。
+Key point
+1. 第三问的condense soft links需要仔细一下 2. Match的时候要先match最长的
  */
 public class CDDirectory {
     public static void main(String[] args) {
@@ -76,6 +87,7 @@ public class CDDirectory {
                 return "loop";
             }
         }
+        // 看上去只是前缀匹配
         for (String key: map.keySet()) {
             String value = map.get(key);
             if (path.startsWith(key)) {

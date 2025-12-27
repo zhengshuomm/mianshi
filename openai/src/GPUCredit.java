@@ -26,33 +26,85 @@ public class GPUCredit {
     }
 
     // 在指定时间消费指定数量的积分，若成功返回 true，余额不足返回 false
+//    public boolean useCredit(String creditId, int timestamp, int amount) {
+//        if (!map.containsKey(creditId)) return false;
+//
+//        List<CreditEntry> credits = map.get(creditId);
+//        credits.sort(Comparator.comparingInt(e -> e.timestamp + e.expiration));
+//
+//        int available = 0;
+//        for (CreditEntry entry : credits) {
+//            if (entry.isValidAt(timestamp)) {
+//                available += entry.amount;
+//            }
+//        }
+//
+//        // need to delete all credit as well
+////        if (available < amount) return false;
+//
+//        int remainingToDeduct = amount;
+//        for (CreditEntry entry : credits) {
+//            if (!entry.isValidAt(timestamp)) continue;
+//            int used = Math.min(entry.amount, remainingToDeduct);
+//            entry.amount -= used;
+//            remainingToDeduct -=used;
+//            if (remainingToDeduct == 0) break;
+//        }
+//        return true;
+//
+//    }
+
     public boolean useCredit(String creditId, int timestamp, int amount) {
-        if (!map.containsKey(creditId)) return false;
+        List<CreditEntry> list = map.get(creditId);
+        if (list == null) return false;
 
-        List<CreditEntry> credits = map.get(creditId);
-        credits.sort(Comparator.comparingInt(e -> e.timestamp + e.expiration));
+        // 按过期时间优先用
+        list.sort(Comparator.comparingInt(e -> e.timestamp + e.expiration));
 
-        int available = 0;
-        for (CreditEntry entry : credits) {
-            if (entry.isValidAt(timestamp)) {
-                available += entry.amount;
+        int remaining = amount;
+        List<CreditEntry> newEntries = new ArrayList<>();
+
+        Iterator<CreditEntry> it = list.iterator();
+        while (it.hasNext() && remaining > 0) {
+            CreditEntry e = it.next();
+            if (!e.isValidAt(timestamp)) continue;
+
+            if (e.amount <= remaining) {
+                // 全部用掉：影响 [timestamp, e.end]
+                remaining -= e.amount;
+                it.remove();
+
+                if (e.timestamp < timestamp) {
+                    newEntries.add(new CreditEntry(
+                            e.amount, e.timestamp, timestamp - e.timestamp - 1
+                    ));
+                }
+            } else {
+                // 只用一部分 → split
+                it.remove();
+
+                // before part
+                if (e.timestamp < timestamp) {
+                    newEntries.add(new CreditEntry(
+                            e.amount, e.timestamp, timestamp - e.timestamp - 1
+                    ));
+                }
+
+                // after part
+                newEntries.add(new CreditEntry(
+                        e.amount - remaining, timestamp, e.timestamp + e.expiration - timestamp
+                ));
+
+                remaining = 0;
             }
         }
 
-        // need to delete all credit as well
-//        if (available < amount) return false;
+        if (remaining > 0) return false;
 
-        int remainingToDeduct = amount;
-        for (CreditEntry entry : credits) {
-            if (!entry.isValidAt(timestamp)) continue;
-            int used = Math.min(entry.amount, remainingToDeduct);
-            entry.amount -= used;
-            remainingToDeduct -=used;
-            if (remainingToDeduct == 0) break;
-        }
+        list.addAll(newEntries);
         return true;
-
     }
+
 
     // 查询指定用户在指定时间点的有效余额；如果没有任何有效积分，则返回 null
     public Integer getBalance(String creditId, int timestamp) {

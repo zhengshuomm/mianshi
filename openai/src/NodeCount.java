@@ -60,6 +60,11 @@ class MachineNode implements MessageHandler {
     private Map<String, List<String>> parseTopoMessage(String message) {
         String body = message.substring(5); // after "Topo:"
         Map<String, List<String>> result = new HashMap<>();
+        System.out.println(message);
+//        Topo:{D=[]}
+//        Topo:{E=[]}
+//        Topo:{D=[], E=[], B=[D, E]}
+//        Topo:{C=[]}
         // Dummy simple parser (not production safe)
         body = body.replace("{", "").replace("}", "");
 //        String[] entries = body.split(", ");

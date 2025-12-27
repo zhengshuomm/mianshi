@@ -52,6 +52,7 @@ System.out.println(store.get("user1", 20)); // 输出: world
 
 
 import java.io.*;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.TreeMap;
@@ -154,6 +155,9 @@ public class KVStore {
     }
 
     public static void main(String[] args) throws IOException {
+        String str = "11:hello|world|1690000000|5:abcde";
+        System.out.println(Arrays.toString(str.split("\\|", 3)));
+
         KVStore store = new KVStore();
 
         store.set("user1", "hello\nthere", 10);
@@ -172,7 +176,87 @@ public class KVStore {
         System.out.println(newStore.get("user1", 25)); // world
     }
 
+
+    // 正确的解析
+//    public static ParsedRecord parseLine(String line) {
+//        int idx = 0;
+//
+//        // 解析 key
+//        ParsedString keyParsed = parseLengthString(line, idx);
+//        String key = keyParsed.content;
+//        idx = keyParsed.nextIndex;
+//
+//        // 解析 timestamp
+//        int tsEnd = line.indexOf('|', idx);
+//        if (tsEnd == -1) {
+//            throw new IllegalArgumentException("Invalid line, missing timestamp delimiter");
+//        }
+//        long timestamp = Long.parseLong(line.substring(idx, tsEnd));
+//        idx = tsEnd + 1;
+//
+//        // 解析 value
+//        ParsedString valueParsed = parseLengthString(line, idx);
+//        String value = valueParsed.content;
+//
+//        return new ParsedRecord(key, timestamp, value);
+//    }
+//
+//    // helper
+//    private static ParsedString parseLengthString(String s, int startIdx) {
+//        int colon = s.indexOf(':', startIdx);
+//        if (colon == -1) throw new IllegalArgumentException("Invalid encoded string at " + startIdx);
+//        int len = Integer.parseInt(s.substring(startIdx, colon));
+//        int contentStart = colon + 1;
+//        int contentEnd = contentStart + len;
+//        if (contentEnd > s.length()) throw new IllegalArgumentException("Encoded length exceeds string size");
+//        String content = s.substring(contentStart, contentEnd);
+//        return new ParsedString(content, contentEnd);
+//    }
+//
+//    // 辅助类
+//    private static class ParsedString {
+//        String content;
+//        int nextIndex;
+//        ParsedString(String content, int nextIndex) {
+//            this.content = content;
+//            this.nextIndex = nextIndex;
+//        }
+//    }
+
 }
+
+
+
+// per key level lock
+//private final ConcurrentHashMap<String, TreeMap<Long, String>> store = new ConcurrentHashMap<>();
+//    private final ConcurrentHashMap<String, ReentrantReadWriteLock> keyLocks = new ConcurrentHashMap<>();
+//
+//    private ReentrantReadWriteLock getLockForKey(String key) {
+//        return keyLocks.computeIfAbsent(key, k -> new ReentrantReadWriteLock());
+//    }
+//
+//    public void set(String key, String value, long timestamp) {
+//        ReentrantReadWriteLock lock = getLockForKey(key);
+//        lock.writeLock().lock();
+//        try {
+//            store.computeIfAbsent(key, k -> new TreeMap<>()).put(timestamp, value);
+//        } finally {
+//            lock.writeLock().unlock();
+//        }
+//    }
+//
+//    public String get(String key, long timestamp) {
+//        ReentrantReadWriteLock lock = getLockForKey(key);
+//        lock.readLock().lock();
+//        try {
+//            TreeMap<Long, String> versions = store.get(key);
+//            if (versions == null) return null;
+//            Map.Entry<Long, String> entry = versions.floorEntry(timestamp);
+//            return entry == null ? null : entry.getValue();
+//        } finally {
+//            lock.readLock().unlock();
+//        }
+//    }
 
 
 
@@ -279,4 +363,18 @@ public class KVStore {
     }
 }
 
+
+
+
+维度	synchronized	ReentrantLock	ReadWriteLock
+锁类型	内置互斥锁	显式互斥锁	读写分离锁
+可重入	✅	✅	✅
+公平锁	❌	✅（可选）	✅（可选）
+可中断	❌	✅	✅
+超时获取	❌	✅	✅
+多条件队列	❌	✅（Condition）	✅
+读并发	❌	❌	✅
+写互斥	✅	✅	✅
+性能（JDK 8+）	⭐⭐⭐⭐	⭐⭐⭐⭐	⭐⭐⭐⭐⭐（读多）
+使用复杂度	⭐	⭐⭐⭐	⭐⭐⭐⭐
 */
