@@ -104,15 +104,17 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 // 状态接口
-interface State extends Serializable {}
+interface State extends Serializable {
+}
 
 // ResumableIterator 接口定义
 interface ResumableIterator<T> extends Iterator<T> {
     State getState();
+
     void setState(State state);
 }
 
-class ListResumableIterator<T> implements ResumableIterator<T>  {
+class ListResumableIterator<T> implements ResumableIterator<T> {
 
     private final List<T> list;
     private int index;
@@ -121,7 +123,6 @@ class ListResumableIterator<T> implements ResumableIterator<T>  {
         this.list = list;
         this.index = 0;
     }
-
 
     @Override
     public State getState() {
@@ -141,7 +142,7 @@ class ListResumableIterator<T> implements ResumableIterator<T>  {
     @Override
     public T next() {
         if (hasNext()) {
-            return list.get(index ++);
+            return list.get(index++);
         }
         return null;
     }
@@ -182,7 +183,8 @@ class MultiResumableIterator<T> implements ResumableIterator<T> {
 
     @Override
     public T next() {
-        if (!hasNext()) throw new NoSuchElementException();
+        if (!hasNext())
+            throw new NoSuchElementException();
         return iterators.get(currentIdx).next();
     }
 
@@ -190,13 +192,13 @@ class MultiResumableIterator<T> implements ResumableIterator<T> {
     public State getState() {
         return new MultiState(
                 currentIdx,
-                currentIdx < iterators.size() ? iterators.get(currentIdx).getState() : null
-        );
+                currentIdx < iterators.size() ? iterators.get(currentIdx).getState() : null);
     }
 
     @Override
     public void setState(State state) {
-        if (!(state instanceof MultiState)) throw new IllegalArgumentException("Invalid state");
+        if (!(state instanceof MultiState))
+            throw new IllegalArgumentException("Invalid state");
         MultiState ms = (MultiState) state;
         this.currentIdx = ms.iteratorIndex;
         if (this.currentIdx < iterators.size() && ms.innerState != null) {
@@ -243,7 +245,8 @@ class TwoDResumableIterator<T> implements ResumableIterator<T> {
 
     @Override
     public T next() {
-        if (!hasNext()) throw new NoSuchElementException();
+        if (!hasNext())
+            throw new NoSuchElementException();
         return matrix.get(outer).get(inner++);
     }
 
@@ -254,7 +257,8 @@ class TwoDResumableIterator<T> implements ResumableIterator<T> {
 
     @Override
     public void setState(State state) {
-        if (!(state instanceof TwoDState)) throw new IllegalArgumentException("Invalid state");
+        if (!(state instanceof TwoDState))
+            throw new IllegalArgumentException("Invalid state");
         TwoDState s = (TwoDState) state;
         this.outer = s.outer;
         this.inner = s.inner;
@@ -272,13 +276,14 @@ class TwoDResumableIterator<T> implements ResumableIterator<T> {
     }
 }
 
-
-
 // AsyncResumableIterator 用协程方式模拟异步（使用 CompletableFuture）
 abstract class AsyncResumableIterator<T> {
     public abstract CompletableFuture<Boolean> hasNextAsync();
+
     public abstract CompletableFuture<T> nextAsync();
+
     public abstract State getState();
+
     public abstract void setState(State state);
 }
 
@@ -313,12 +318,9 @@ class AsyncWrapperResumableIterator<T> extends AsyncResumableIterator<T> {
     }
 }
 
-
-
-
 // 示例测试类（可选）
 class IteratorTest {
-    public static void main(String[] args) throws Exception{
+    public static void main(String[] args) throws Exception {
         ListResumableIterator<Integer> iter1 = new ListResumableIterator<>(Arrays.asList(1, 2));
         ListResumableIterator<Integer> iter2 = new ListResumableIterator<>(Collections.emptyList());
         ListResumableIterator<Integer> iter3 = new ListResumableIterator<>(Arrays.asList(3, 4));

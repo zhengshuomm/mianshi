@@ -27,16 +27,102 @@ Key point
  */
 public class CDDirectory {
     public static void main(String[] args) {
-//        print(cd("/foo/bar/", "baz"));
-//        print(cd("/foo/../", "./baz"));
-//        print(cd("/", "foo/bar/../../baz/"));
-//        print(cd("/", ".."));
-//        print(cd("~/", ".."));
-        print(cd2("/foo/bar", "baz", new String[]{"/foo/bar", "/abc"}));
-        print(cd2("/foo/bar", "baz", new String[]{"/foo/bar", "/abc", "/abc", "/bcd", "/bcd/baz",
-        "/xyz"}));
-        print(cd2("/foo/bar", "baz", new String[]{"/foo/bar", "/abc", "/foo/bar/baz", "/xyz"}));
-        print(cd2("/foo/bar", "baz", new String[]{"/foo/bar", "/abc", "/abc", "/foo/bar"}));
+        System.out.println("=== 基本 CD 功能测试 ===");
+        
+        // 1. 正常路径拼接
+        print("1. 正常拼接: " + cd("/foo/bar", "baz"));  // /foo/bar/baz
+        
+        // 2. 处理 ..（向上一级）
+        print("2. 向上一级: " + cd("/foo/bar", ".."));  // /foo
+        
+        // 3. 处理 .（当前目录）
+        print("3. 当前目录: " + cd("/foo/bar", "."));  // /foo/bar
+        
+        // 4. 多层 ..
+        print("4. 多层向上: " + cd("/foo/bar/baz", "../../qux"));  // /foo/qux
+        
+        // 5. 根目录边界（试图超出根目录）
+        print("5. 超出根目录: " + cd("/", ".."));  // Null
+        
+        // 6. 绝对路径（newDir 以 / 开头）
+        print("6. 绝对路径: " + cd("/foo/bar", "/baz/qux"));  // /baz/qux
+        
+        // 7. 混合 . 和 ..
+        print("7. 混合路径: " + cd("/foo/bar", "./baz/../qux"));  // /foo/bar/qux
+        
+        // 8. 空目录名
+        print("8. 空路径: " + cd("/foo", ""));  // /foo
+        
+        System.out.println("\n=== 软链接功能测试 ===");
+        
+        // 9. 单个软链接
+        print("9. 单链接: " + cd2("/foo/bar", "baz", 
+            new String[]{"/foo/bar", "/abc"}));  // /abc/baz
+        
+        // 10. 链式软链接（A->B->C）
+        print("10. 链式链接: " + cd2("/foo/bar", "baz", 
+            new String[]{"/foo/bar", "/abc", "/abc", "/bcd", "/bcd/baz", "/xyz"}));  // /xyz
+        
+        // 11. 最长匹配优先
+        print("11. 最长匹配: " + cd2("/foo/bar", "baz", 
+            new String[]{"/foo/bar", "/abc", "/foo/bar/baz", "/xyz"}));  // /xyz
+        
+        // 12. 循环检测
+        print("12. 循环检测: " + cd2("/foo/bar", "baz", 
+            new String[]{"/foo/bar", "/abc", "/abc", "/foo/bar"}));  // loop
+        
+        // 13. 无匹配的软链接
+        print("13. 无匹配: " + cd2("/foo/bar", "baz", 
+            new String[]{"/other", "/xyz"}));  // /foo/bar/baz
+        
+        // 14. 软链接到根目录
+        print("14. 链接到根: " + cd2("/foo/bar", "baz", 
+            new String[]{"/foo/bar", "/"}));  // /baz
+        
+        // 15. 部分路径匹配（不应该匹配）
+        print("15. 部分匹配: " + cd2("/foobar", "baz", 
+            new String[]{"/foo", "/abc"}));  // /foobar/baz (不匹配)
+        
+        // 16. 软链接后使用 ..
+        print("16. 链接+向上: " + cd2("/foo/bar", "../qux", 
+            new String[]{"/foo", "/abc"}));  // /abc/qux
+        
+        // 17. 多层链式循环
+        print("17. 多层循环: " + cd2("/a", "test", 
+            new String[]{"/a", "/b", "/b", "/c", "/c", "/a"}));  // loop
+        
+        // 18. 链接后路径为空
+        print("18. 链接后空: " + cd2("/foo/bar", "", 
+            new String[]{"/foo/bar", "/abc"}));  // /abc
+        
+        // 19. 嵌套路径的链接
+        print("19. 嵌套链接: " + cd2("/foo/bar/baz", "qux", 
+            new String[]{"/foo", "/x", "/foo/bar", "/y"}));  // /y/baz/qux (最长匹配)
+        
+        // 20. 链接到更短的路径
+        print("20. 缩短路径: " + cd2("/foo/bar/baz", "qux", 
+            new String[]{"/foo/bar/baz", "/x"}));  // /x/qux
+        
+        System.out.println("\n=== 边界条件测试 ===");
+        
+        // 21. 根目录的软链接
+        print("21. 根目录链接: " + cd2("/", "foo", 
+            new String[]{"/", "/abc"}));  // /abc/foo
+        
+        // 22. 空的软链接字典
+        print("22. 空字典: " + cd2("/foo/bar", "baz", new String[]{}));  // /foo/bar/baz
+        
+        // 23. 相对路径中的软链接
+        print("23. 相对路径链接: " + cd2("/foo", "bar/baz", 
+            new String[]{"/foo/bar", "/abc"}));  // /abc/baz
+        
+        // 24. 软链接值也有软链接
+        print("24. 传递链接: " + cd2("/foo", "test", 
+            new String[]{"/foo", "/bar", "/bar", "/baz"}));  // /baz/test
+        
+        // 25. 自我循环
+        print("25. 自我循环: " + cd2("/foo", "bar", 
+            new String[]{"/foo", "/foo"}));  // loop
     }
 
     public static void print(String str) {
@@ -68,10 +154,12 @@ public class CDDirectory {
     }
 
     public static String cd2(String currentDir, String newDir, String[] dict) {
-        Comparator<String> comp = Comparator
-                .comparingInt((String s) -> s.length() - s.replace("/", "").length())
-                .reversed()
-                .thenComparing(Comparator.naturalOrder());
+        Comparator<String> comp = (s1, s2) -> {
+            int depth1 = s1.length() - s1.replace("/", "").length();
+            int depth2 = s2.length() - s2.replace("/", "").length();
+            if (depth1 != depth2) return depth2 - depth1; // 深度倒序
+            return s1.compareTo(s2); // 字典序
+        };
         TreeMap<String, String> map = new TreeMap<>(comp);
         for (int i = 0 ; i <= dict.length - 2 ; i = i +2) {
             map.put(dict[i], dict[i + 1]);

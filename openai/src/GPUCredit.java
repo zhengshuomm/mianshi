@@ -1,4 +1,5 @@
 import java.util.*;
+
 public class GPUCredit {
 
     class CreditEntry {
@@ -13,7 +14,7 @@ public class GPUCredit {
         }
 
         boolean isValidAt(int time) {
-            return time >=timestamp && time <= timestamp + expiration;
+            return time >= timestamp && time <= timestamp + expiration;
         }
     }
 
@@ -25,38 +26,10 @@ public class GPUCredit {
         map.get(creditId).add(new CreditEntry(amount, timestamp, expiration));
     }
 
-    // 在指定时间消费指定数量的积分，若成功返回 true，余额不足返回 false
-//    public boolean useCredit(String creditId, int timestamp, int amount) {
-//        if (!map.containsKey(creditId)) return false;
-//
-//        List<CreditEntry> credits = map.get(creditId);
-//        credits.sort(Comparator.comparingInt(e -> e.timestamp + e.expiration));
-//
-//        int available = 0;
-//        for (CreditEntry entry : credits) {
-//            if (entry.isValidAt(timestamp)) {
-//                available += entry.amount;
-//            }
-//        }
-//
-//        // need to delete all credit as well
-////        if (available < amount) return false;
-//
-//        int remainingToDeduct = amount;
-//        for (CreditEntry entry : credits) {
-//            if (!entry.isValidAt(timestamp)) continue;
-//            int used = Math.min(entry.amount, remainingToDeduct);
-//            entry.amount -= used;
-//            remainingToDeduct -=used;
-//            if (remainingToDeduct == 0) break;
-//        }
-//        return true;
-//
-//    }
-
     public boolean useCredit(String creditId, int timestamp, int amount) {
         List<CreditEntry> list = map.get(creditId);
-        if (list == null) return false;
+        if (list == null)
+            return false;
 
         // 按过期时间优先用
         list.sort(Comparator.comparingInt(e -> e.timestamp + e.expiration));
@@ -67,7 +40,8 @@ public class GPUCredit {
         Iterator<CreditEntry> it = list.iterator();
         while (it.hasNext() && remaining > 0) {
             CreditEntry e = it.next();
-            if (!e.isValidAt(timestamp)) continue;
+            if (!e.isValidAt(timestamp))
+                continue;
 
             if (e.amount <= remaining) {
                 // 全部用掉：影响 [timestamp, e.end]
@@ -76,8 +50,7 @@ public class GPUCredit {
 
                 if (e.timestamp < timestamp) {
                     newEntries.add(new CreditEntry(
-                            e.amount, e.timestamp, timestamp - e.timestamp - 1
-                    ));
+                            e.amount, e.timestamp, timestamp - e.timestamp - 1));
                 }
             } else {
                 // 只用一部分 → split
@@ -86,140 +59,169 @@ public class GPUCredit {
                 // before part
                 if (e.timestamp < timestamp) {
                     newEntries.add(new CreditEntry(
-                            e.amount, e.timestamp, timestamp - e.timestamp - 1
-                    ));
+                            e.amount, e.timestamp, timestamp - e.timestamp - 1));
                 }
 
                 // after part
                 newEntries.add(new CreditEntry(
-                        e.amount - remaining, timestamp, e.timestamp + e.expiration - timestamp
-                ));
+                        e.amount - remaining, timestamp, e.timestamp + e.expiration - timestamp));
 
                 remaining = 0;
             }
         }
 
-        if (remaining > 0) return false;
+        if (remaining > 0)
+            return false;
 
         list.addAll(newEntries);
         return true;
     }
 
-
     // 查询指定用户在指定时间点的有效余额；如果没有任何有效积分，则返回 null
     public Integer getBalance(String creditId, int timestamp) {
-        if (!map.containsKey(creditId)) return null;
+        if (!map.containsKey(creditId))
+            return null;
         int total = 0;
-//        boolean valid = false;
         for (CreditEntry entry : map.get(creditId)) {
             if (entry.isValidAt(timestamp)) {
                 total += entry.amount;
-//                valid = true;
             }
         }
-        return total == 0? null : total;
+        return total == 0 ? null : total;
     }
 
     public static void main(String[] args) {
-        GPUCredit gpu = new GPUCredit();
+        GPUCredit2 gpu = new GPUCredit2();
 
         // Test 1
-//        gpu.addCredit("microsoft", 10, 10, 30);
-//        System.out.println(gpu.getBalance("microsoft", 0));    // null
-//        System.out.println(gpu.getBalance("microsoft", 10));   // 10
-//        System.out.println(gpu.getBalance("microsoft", 40));   // 10
-//        System.out.println(gpu.getBalance("microsoft", 41));   // null
+        gpu.addCredit("microsoft", 10, 10, 30);
+        System.out.println(gpu.getBalance("microsoft", 0)); // null
+        System.out.println(gpu.getBalance("microsoft", 10)); // 10
+        System.out.println(gpu.getBalance("microsoft", 40)); // 10
+        System.out.println(gpu.getBalance("microsoft", 41)); // null
 
         // Test 2
-        gpu = new GPUCredit();
+        gpu = new GPUCredit2();
         gpu.addCredit("amazon", 40, 10, 50);
         gpu.useCredit("amazon", 30, 30);
-        System.out.println(gpu.getBalance("amazon", 12));      // 10
+        System.out.println(gpu.getBalance("amazon", 12)); // 10
         gpu.addCredit("amazon", 20, 60, 10);
-        System.out.println(gpu.getBalance("amazon", 60));      // 30
-        System.out.println(gpu.getBalance("amazon", 61));      // 20
-        System.out.println(gpu.getBalance("amazon", 70));      // 20
-        System.out.println(gpu.getBalance("amazon", 71));      // null
+        System.out.println(gpu.getBalance("amazon", 60)); // 30
+        System.out.println(gpu.getBalance("amazon", 61)); // 20
+        System.out.println(gpu.getBalance("amazon", 70)); // 20
+        System.out.println(gpu.getBalance("amazon", 71)); // null
 
         // Edge case
-        gpu = new GPUCredit();
+        gpu = new GPUCredit2();
         gpu.addCredit("openai", 10, 10, 30);
-        gpu.useCredit("openai", 10, 100000000);  // overuse
-        System.out.println(gpu.getBalance("openai", 10));      // null
+        gpu.useCredit("openai", 10, 100000000); // overuse
+        System.out.println(gpu.getBalance("openai", 10)); // null
         gpu.addCredit("openai", 10, 20, 10);
-        System.out.println(gpu.getBalance("openai", 20));      // 10
+        System.out.println(gpu.getBalance("openai", 20)); // 10
     }
+
+    // 在指定时间消费指定数量的积分，若成功返回 true，余额不足返回 false
+    // public boolean useCredit(String creditId, int timestamp, int amount) {
+    // if (!map.containsKey(creditId)) return false;
+    //
+    // List<CreditEntry> credits = map.get(creditId);
+    // credits.sort(Comparator.comparingInt(e -> e.timestamp + e.expiration));
+    //
+    // int available = 0;
+    // for (CreditEntry entry : credits) {
+    // if (entry.isValidAt(timestamp)) {
+    // available += entry.amount;
+    // }
+    // }
+    //
+    // // need to delete all credit as well
+    //// if (available < amount) return false;
+    //
+    // int remainingToDeduct = amount;
+    // for (CreditEntry entry : credits) {
+    // if (!entry.isValidAt(timestamp)) continue;
+    // int used = Math.min(entry.amount, remainingToDeduct);
+    // entry.amount -= used;
+    // remainingToDeduct -=used;
+    // if (remainingToDeduct == 0) break;
+    // }
+    // return true;
+    //
+    // }
 }
 
-
-//public class GPUCredit {
+// public class GPUCredit {
 //
 //
-//    // <start time, amount>, <end time + 1, -amount>
-//    public final Map<String, TreeMap<Integer, Integer>> creditMap = new HashMap<>();
+// // <start time, amount>, <end time + 1, -amount>
+// public final Map<String, TreeMap<Integer, Integer>> creditMap = new
+// HashMap<>();
 //
-//    // 添加积分：指定用户、数量、生效时间和有效期（单位：时间戳）
-//    public void addCredit(String creditId, int amount, int timestamp, int expiration) {
-//        creditMap.computeIfAbsent(creditId, k -> new TreeMap<>());
-////        creditMap.get(creditId).put(new CreditEntry(amount, timestamp, expiration));
-//        Map<Integer, Integer> map = creditMap.get(creditId);
-//        map.put(timestamp, map.getOrDefault(timestamp, 0) + amount);
-//        map.put(timestamp + expiration + 1, map.getOrDefault(timestamp + expiration + 1, -amount));
-//    }
+// // 添加积分：指定用户、数量、生效时间和有效期（单位：时间戳）
+// public void addCredit(String creditId, int amount, int timestamp, int
+// expiration) {
+// creditMap.computeIfAbsent(creditId, k -> new TreeMap<>());
+//// creditMap.get(creditId).put(new CreditEntry(amount, timestamp,
+// expiration));
+// Map<Integer, Integer> map = creditMap.get(creditId);
+// map.put(timestamp, map.getOrDefault(timestamp, 0) + amount);
+// map.put(timestamp + expiration + 1, map.getOrDefault(timestamp + expiration +
+// 1, -amount));
+// }
 //
-//    // 在指定时间消费指定数量的积分，若成功返回 true，余额不足返回 false
-//    public boolean useCredit(String creditId, int timestamp, int amount) {
-//        if (!creditMap.containsKey(creditId)) return false;
+// // 在指定时间消费指定数量的积分，若成功返回 true，余额不足返回 false
+// public boolean useCredit(String creditId, int timestamp, int amount) {
+// if (!creditMap.containsKey(creditId)) return false;
 //
-//        TreeMap<Integer, Integer> map = creditMap.get(creditId);
-//        map.put(timestamp, map.getOrDefault(timestamp, 0) - amount);
-//        return true;
+// TreeMap<Integer, Integer> map = creditMap.get(creditId);
+// map.put(timestamp, map.getOrDefault(timestamp, 0) - amount);
+// return true;
 //
-//    }
+// }
 //
-//    // 查询指定用户在指定时间点的有效余额；如果没有任何有效积分，则返回 null
-//    public Integer getBalance(String creditId, int timestamp) {
-//        if (!creditMap.containsKey(creditId)) return null;
-//        int total = 0;
+// // 查询指定用户在指定时间点的有效余额；如果没有任何有效积分，则返回 null
+// public Integer getBalance(String creditId, int timestamp) {
+// if (!creditMap.containsKey(creditId)) return null;
+// int total = 0;
 //
-//        TreeMap<Integer, Integer> map = creditMap.get(creditId);
-//        for (Integer time : map.keySet()) {
-//            int val = map.get(time);
-//            if (time <= timestamp) {
-//                total += val;
-//                if (total < 0) total = 0;
-//            } else break;
-//        }
-//        return total == 0? null : total;
-//    }
+// TreeMap<Integer, Integer> map = creditMap.get(creditId);
+// for (Integer time : map.keySet()) {
+// int val = map.get(time);
+// if (time <= timestamp) {
+// total += val;
+// if (total < 0) total = 0;
+// } else break;
+// }
+// return total == 0? null : total;
+// }
 //
-//    public static void main(String[] args) {
-//        GPUCredit gpu = new GPUCredit();
+// public static void main(String[] args) {
+// GPUCredit gpu = new GPUCredit();
 //
-//        // Test 1
-////        gpu.addCredit("microsoft", 10, 10, 30);
-////        System.out.println(gpu.getBalance("microsoft", 0));    // null
-////        System.out.println(gpu.getBalance("microsoft", 10));   // 10
-////        System.out.println(gpu.getBalance("microsoft", 40));   // 10
-////        System.out.println(gpu.getBalance("microsoft", 41));   // null
+// // Test 1
+//// gpu.addCredit("microsoft", 10, 10, 30);
+//// System.out.println(gpu.getBalance("microsoft", 0)); // null
+//// System.out.println(gpu.getBalance("microsoft", 10)); // 10
+//// System.out.println(gpu.getBalance("microsoft", 40)); // 10
+//// System.out.println(gpu.getBalance("microsoft", 41)); // null
 //
-//        // Test 2
-//        gpu = new GPUCredit();
-//        gpu.addCredit("amazon", 40, 10, 50);
-//        gpu.useCredit("amazon", 30, 30);
-//        System.out.println(gpu.getBalance("amazon", 12));      // 10
-//        gpu.addCredit("amazon", 20, 60, 10);
-//        System.out.println(gpu.getBalance("amazon", 60));      // 30
-//        System.out.println(gpu.getBalance("amazon", 61));      // 20
-//        System.out.println(gpu.getBalance("amazon", 70));      // 20
-//        System.out.println(gpu.getBalance("amazon", 71));      // null
+// // Test 2
+// gpu = new GPUCredit();
+// gpu.addCredit("amazon", 40, 10, 50);
+// gpu.useCredit("amazon", 30, 30);
+// System.out.println(gpu.getBalance("amazon", 12)); // 10
+// gpu.addCredit("amazon", 20, 60, 10);
+// System.out.println(gpu.getBalance("amazon", 60)); // 30
+// System.out.println(gpu.getBalance("amazon", 61)); // 20
+// System.out.println(gpu.getBalance("amazon", 70)); // 20
+// System.out.println(gpu.getBalance("amazon", 71)); // null
 //
-//        // Edge case
-//        gpu = new GPUCredit();
-//        gpu.addCredit("openai", 10, 10, 30);
-//        gpu.useCredit("openai", 10, 100000000);  // overuse
-//        System.out.println(gpu.getBalance("openai", 10));      // null
-//        gpu.addCredit("openai", 10, 20, 10);
-//        System.out.println(gpu.getBalance("openai", 20));      // 10
-//    }
-//}
+// // Edge case
+// gpu = new GPUCredit();
+// gpu.addCredit("openai", 10, 10, 30);
+// gpu.useCredit("openai", 10, 100000000); // overuse
+// System.out.println(gpu.getBalance("openai", 10)); // null
+// gpu.addCredit("openai", 10, 20, 10);
+// System.out.println(gpu.getBalance("openai", 20)); // 10
+// }
+// }

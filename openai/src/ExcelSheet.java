@@ -138,16 +138,16 @@ class SpreadSheet {
     }
 
     public boolean dfs(Node node, Set<Node> visited, Set<Node> visiting) {
+        if (visiting.contains(node)) return true;   // ✅ 第1步：检测环
+        if (visited.contains(node)) return false;   // ✅ 第2步：剪枝优化
+        
         visited.add(node);
         visiting.add(node);
+        
         for (Node n: node.upNodes) {
-            if (!visited.contains(n)) {
-                if (dfs(n, visited, visiting)) return true;
-            } else if (visiting.contains(n)){
-                return true;
-            }
+            if (dfs(n, visited, visiting)) return true;  // ✅ 简化逻辑
         }
-
+        
         visiting.remove(node);
         return false;
     }
@@ -184,19 +184,33 @@ class SpreadSheet1 {
 
         } else {
             node.value = Integer.parseInt(exp);
+            node.isExp = false;  // FIX: 标记为非表达式
         }
 
     }
 
     public int getCell(String name) {
+        return getCellWithCycleDetection(name, new HashSet<>());
+    }
+    
+    private int getCellWithCycleDetection(String name, Set<String> visiting) {
         if (!map.containsKey(name)) return 0;
+        
+        // 检测循环
+        if (visiting.contains(name)) {
+            throw new IllegalStateException("Circular dependency detected: " + name);
+        }
+        
         Node node = map.get(name);
         if (!node.isExp) return node.value;
-
+        
+        visiting.add(name);
         int value = 0;
-        for (Node up: node.upNodes) {
-            value += getCell(up.name);
+        for (Node up : node.upNodes) {
+            value += getCellWithCycleDetection(up.name, visiting);
         }
+        visiting.remove(name);
+        
         return value;
     }
 }
