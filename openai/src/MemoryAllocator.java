@@ -29,7 +29,7 @@ import java.util.*;
 public class MemoryAllocator {
 
     private final int totalCapacity;
-    private final List<Block> freeBlocks;
+    private List<Block> freeBlocks;
     private final List<Block> allocatedBlocks;
 
     static class Block {
@@ -112,21 +112,21 @@ public class MemoryAllocator {
         freeBlocks.add(newFree);
         freeBlocks.sort(Comparator.comparingInt(x -> x.start));
 
-        // 合并相邻块
-        boolean merged;
-        do {
-            merged = false;
-            for (int i = 0; i < freeBlocks.size() - 1; i++) {
-                Block a = freeBlocks.get(i);
-                Block b = freeBlocks.get(i + 1);
-                if (a.end() == b.start) {
-                    freeBlocks.remove(i + 1);
-                    freeBlocks.set(i, new Block(a.start, a.size + b.size));
-                    merged = true;
-                    break;
-                }
+        // 合并相邻块（一次遍历 merge interval）
+        List<Block> merged = new ArrayList<>();
+        Block cur = freeBlocks.get(0);
+        for (int i = 1; i < freeBlocks.size(); i++) {
+            Block b = freeBlocks.get(i);
+            if (cur.end() == b.start) {
+                cur = new Block(cur.start, cur.size + b.size);
+            } else {
+                merged.add(cur);
+                cur = b;
             }
-        } while (merged);
+        }
+        merged.add(cur);
+        freeBlocks.clear();
+        freeBlocks.addAll(merged);
     }
 
     public List<Block> getFreeBlocks() { return new ArrayList<>(freeBlocks); }

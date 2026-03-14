@@ -52,6 +52,10 @@ System.out.println(store.get("user1", 20)); // 输出: world
 
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -59,15 +63,16 @@ public class KVStore {
     // 使用 Map<Key, TreeMap<Timestamp, Value>> 存储版本化数据
     // TreeMap 保证时间戳有序，可以高效查找 <= 某时间戳的最新值
     private final Map<String, TreeMap<Long, String>> store;
-    
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+
     // 读写锁：支持多个读者，单个写者
     private final ReadWriteLock lock;
-    
+
     public KVStore() {
         this.store = new HashMap<>();
         this.lock = new ReentrantReadWriteLock();
     }
-    
+
     /**
      * 设置键值对，带时间戳
      * 时间复杂度: O(log n) where n 是该 key 的版本数
@@ -81,7 +86,7 @@ public class KVStore {
             lock.writeLock().unlock();
         }
     }
-    
+
     /**
      * 获取键在指定时间戳的值
      * 返回 <= timestamp 的最新值
@@ -94,7 +99,7 @@ public class KVStore {
             if (versions == null) {
                 return null;
             }
-            
+
             // floorEntry: 返回 <= timestamp 的最大 entry
             Map.Entry<Long, String> entry = versions.floorEntry(timestamp);
             return entry == null ? null : entry.getValue();
@@ -102,7 +107,7 @@ public class KVStore {
             lock.readLock().unlock();
         }
     }
-    
+
     /**
      * 将数据持久化到文件
      * 序列化格式（二进制）：
@@ -117,23 +122,23 @@ public class KVStore {
         lock.readLock().lock();
         try (DataOutputStream out = new DataOutputStream(
                 new BufferedOutputStream(new FileOutputStream(filePath)))) {
-            
+
             for (Map.Entry<String, TreeMap<Long, String>> entry : store.entrySet()) {
                 String key = entry.getKey();
                 TreeMap<Long, String> versions = entry.getValue();
-                
+
                 for (Map.Entry<Long, String> versionEntry : versions.entrySet()) {
                     long timestamp = versionEntry.getKey();
                     String value = versionEntry.getValue();
-                    
+
                     // 写入 key
                     byte[] keyBytes = key.getBytes("UTF-8");
                     out.writeInt(keyBytes.length);
                     out.write(keyBytes);
-                    
+
                     // 写入 timestamp
                     out.writeLong(timestamp);
-                    
+
                     // 写入 value
                     byte[] valueBytes = value.getBytes("UTF-8");
                     out.writeInt(valueBytes.length);
@@ -144,33 +149,34 @@ public class KVStore {
             lock.readLock().unlock();
         }
     }
-    
+
     /**
      * 从文件加载数据
      */
     public void loadFromFile(String filePath) throws IOException {
         lock.writeLock().lock();
-        try (DataInputStream in = new DataInputStream(
-                new BufferedInputStream(new FileInputStream(filePath)))) {
-            
+        // try (DataInputStream in = new DataInputStream(
+        // new BufferedInputStream(new FileInputStream(filePath)))) {
+        try (DataInputStream in = new DataInputStream(new BufferedInputStream(new FileInputStream(filePath)))) {
+
             store.clear();
-            
+
             while (in.available() > 0) {
                 // 读取 key
                 int keyLen = in.readInt();
                 byte[] keyBytes = new byte[keyLen];
                 in.readFully(keyBytes);
                 String key = new String(keyBytes, "UTF-8");
-                
+
                 // 读取 timestamp
                 long timestamp = in.readLong();
-                
+
                 // 读取 value
                 int valueLen = in.readInt();
                 byte[] valueBytes = new byte[valueLen];
                 in.readFully(valueBytes);
                 String value = new String(valueBytes, "UTF-8");
-                
+
                 // 存储
                 store.putIfAbsent(key, new TreeMap<>());
                 store.get(key).put(timestamp, value);
@@ -179,80 +185,99 @@ public class KVStore {
             lock.writeLock().unlock();
         }
     }
-    
-    
+
+    public CompletableFuture<String> getFuture(String key, long futureTimestamp) {
+        long delay = futureTimestamp - System.currentTimeMillis();
+
+        if (delay <= 0) {
+            // ✅ 立即完成的 future（同步）
+            return CompletableFuture.completedFuture(get(key, futureTimestamp));
+        } else {
+            // ✅ 延迟完成的 future（异步）
+            CompletableFuture<String> future = new CompletableFuture<>();
+            scheduler.schedule(() -> {
+                try {
+                    future.complete(get(key, futureTimestamp));
+                } catch (Exception e) {
+                    future.completeExceptionally(e);
+                }
+            }, delay, TimeUnit.MILLISECONDS);
+            return future;
+        }
+    }
+
     // ========== 测试代码 ==========
     public static void main(String[] args) throws IOException {
         System.out.println("=== KVStore 基础功能测试 ===\n");
-        
+
         // 测试 1: 基本 set/get
         System.out.println("【测试 1】基本 set/get");
         KVStore store = new KVStore();
         store.set("user1", "hello", 10);
         store.set("user1", "world", 15);
-        
-        System.out.println("get(user1, 5)  = " + store.get("user1", 5));   // null
-        System.out.println("get(user1, 10) = " + store.get("user1", 10));  // hello
-        System.out.println("get(user1, 12) = " + store.get("user1", 12));  // hello
-        System.out.println("get(user1, 15) = " + store.get("user1", 15));  // world
-        System.out.println("get(user1, 20) = " + store.get("user1", 20));  // world
-        
+
+        System.out.println("get(user1, 5)  = " + store.get("user1", 5)); // null
+        System.out.println("get(user1, 10) = " + store.get("user1", 10)); // hello
+        System.out.println("get(user1, 12) = " + store.get("user1", 12)); // hello
+        System.out.println("get(user1, 15) = " + store.get("user1", 15)); // world
+        System.out.println("get(user1, 20) = " + store.get("user1", 20)); // world
+
         // 测试 2: 多个 key
         System.out.println("\n【测试 2】多个 key");
         store.set("user2", "alice", 5);
         store.set("user2", "bob", 10);
         store.set("user3", "charlie", 8);
-        
-        System.out.println("get(user2, 7)  = " + store.get("user2", 7));   // alice
-        System.out.println("get(user2, 12) = " + store.get("user2", 12));  // bob
-        System.out.println("get(user3, 8)  = " + store.get("user3", 8));   // charlie
-        
+
+        System.out.println("get(user2, 7)  = " + store.get("user2", 7)); // alice
+        System.out.println("get(user2, 12) = " + store.get("user2", 12)); // bob
+        System.out.println("get(user3, 8)  = " + store.get("user3", 8)); // charlie
+
         // 测试 3: 特殊字符
         System.out.println("\n【测试 3】特殊字符");
         store.set("key:with:colon", "value\nwith\nnewline", 20);
         store.set("key|pipe|", "value:special:chars", 25);
-        
+
         System.out.println("get(key:with:colon, 20) = " + store.get("key:with:colon", 20));
         System.out.println("get(key|pipe|, 25) = " + store.get("key|pipe|", 25));
-        
+
         // 测试 4: 持久化和加载
         System.out.println("\n【测试 4】持久化和加载");
         String testFile = "/tmp/kvstore_test.bin";
-        
+
         // 保存
         store.persistToFile(testFile);
         System.out.println("数据已保存到: " + testFile);
-        
+
         // 创建新 store 并加载
         KVStore newStore = new KVStore();
         newStore.loadFromFile(testFile);
         System.out.println("从文件加载完成");
-        
+
         // 验证数据
         System.out.println("验证加载的数据:");
-        System.out.println("  get(user1, 12) = " + newStore.get("user1", 12));  // hello
-        System.out.println("  get(user1, 20) = " + newStore.get("user1", 20));  // world
-        System.out.println("  get(user2, 7)  = " + newStore.get("user2", 7));   // alice
+        System.out.println("  get(user1, 12) = " + newStore.get("user1", 12)); // hello
+        System.out.println("  get(user1, 20) = " + newStore.get("user1", 20)); // world
+        System.out.println("  get(user2, 7)  = " + newStore.get("user2", 7)); // alice
         System.out.println("  get(key:with:colon, 20) = " + newStore.get("key:with:colon", 20));
-        
+
         // 测试 5: 边界情况
         System.out.println("\n【测试 5】边界情况");
         KVStore edgeStore = new KVStore();
-        
+
         // 空字符串
         edgeStore.set("", "empty key", 1);
         edgeStore.set("empty value", "", 2);
         System.out.println("get('', 1) = '" + edgeStore.get("", 1) + "'");
         System.out.println("get('empty value', 2) = '" + edgeStore.get("empty value", 2) + "'");
-        
+
         // 不存在的 key
         System.out.println("get('nonexistent', 10) = " + edgeStore.get("nonexistent", 10));
-        
+
         // 相同时间戳覆盖
         edgeStore.set("user", "v1", 10);
-        edgeStore.set("user", "v2", 10);  // 覆盖
-        System.out.println("get('user', 10) = " + edgeStore.get("user", 10));  // v2
-        
+        edgeStore.set("user", "v2", 10); // 覆盖
+        System.out.println("get('user', 10) = " + edgeStore.get("user", 10)); // v2
+
         System.out.println("\n=== 所有测试通过！✅ ===");
     }
 }

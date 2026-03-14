@@ -75,16 +75,13 @@ public class IPv4Iterator implements Iterator<String>, Iterable<String> {
 
     private static long parse(String ip) {
         String[] parts = ip.trim().split("\\.");
-        if (parts.length != 4) {
-            throw new IllegalArgumentException("Invalid IPv4: " + ip);
-        }
         long v = 0;
         for (int i = 0; i < 4; i++) {
             int octet = Integer.parseInt(parts[i].trim());
             if (octet < 0 || octet > 255) {
                 throw new IllegalArgumentException("Invalid octet: " + octet);
             }
-            v = (v << 8) | (octet & 0xFF);
+            v = (v << 8) | (octet);
         }
         return v;
     }
@@ -133,6 +130,10 @@ public class IPv4Iterator implements Iterator<String>, Iterable<String> {
     }
 
     public static void main(String[] args) {
+        System.out.println(Integer.toBinaryString((1 << 31) - 1));
+        System.out.println();
+        System.out.println(Integer.toBinaryString(Integer.MAX_VALUE));
+        System.out.println(Integer.toBinaryString(-1 >>> 1));
         // Test Case 1: /32 (single IP)
         List<String> t1 = toList(new IPv4Iterator("192.168.1.100/32"));
         if (!t1.equals(List.of("192.168.1.100"))) throw new AssertionError("Test 1: " + t1);

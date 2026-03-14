@@ -1,6 +1,9 @@
 import java.util.*;
 import java.util.stream.Collectors;
 
+
+// kv, memory allocator, infection, credit
+// monstor, chat，toy
 class TypeNode {
     String baseType;
     List<TypeNode> children;
@@ -31,15 +34,16 @@ class TypeNode {
         sb.append("]");
         return sb.toString();
 
+        // return "(" + String.join(", ", children.stream().map(TypeNode::toString).toList()) + ")";
     }
 
-    @Override
-    public boolean equals(Object other) {
-        TypeNode node = (TypeNode) other;
-        if (this.isPrimitive() != node.isPrimitive()) return false;
-        if (this.isPrimitive()) return this.baseType.equals(node.baseType);
-        return Objects.equals(this.children, node.children);
-    }
+    // @Override
+    // public boolean equals(Object other) {
+    //     TypeNode node = (TypeNode) other;
+    //     if (this.isPrimitive() != node.isPrimitive()) return false;
+    //     if (this.isPrimitive()) return this.baseType.equals(node.baseType);
+    //     return Objects.equals(this.children, node.children);
+    // }
 
 }
 
@@ -113,7 +117,7 @@ class TypeResolver1 {
             if (isGeneric(node.baseType) && map.containsKey(node.baseType)) {
                 return map.get(node.baseType);
             }
-            return new TypeNode(node.baseType);
+            return node;
         } else {
             List<TypeNode> newChildren = new ArrayList<>();
             for (TypeNode child : node.children) {
@@ -132,7 +136,12 @@ class TypeResolver1 {
 class Main1 {
     public static void main(String[] args) {
         List<Integer> list = Arrays.asList(1,2,3);
-        System.out.println(list);
+        List<String> strs = new ArrayList<>();
+        for (Integer node : list) {
+            strs.add(node.toString());
+        }
+        System.out.println( "(" + String.join(", ", strs) + ")");
+
         String result = list.stream().map(String::valueOf).collect(Collectors.joining(","));
         System.out.println(result);
 

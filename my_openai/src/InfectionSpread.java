@@ -195,78 +195,56 @@ public class InfectionSpread {
     }
     
     /**
-     * Part 4: 康复与免疫 + N > 1
-     * 需要至少 N 个活跃感染邻居才会被感染（N=2 需 2 个，N=3 需 3 个）
+     * Part 4 无康复版本：需要至少 N 个感染邻居才被感染，感染后不再康复。
+     * 返回扩散停止时的步数（无新感染或已全感染）。D 参数保留以兼容调用，未使用。
      */
     public int daysUntilInfectionStops(int[][] grid, int D, int N) {
-        if (grid == null || grid.length == 0 || grid[0].length == 0 || D <= 0 || N <= 0) {
+        if (grid == null || grid.length == 0 || grid[0].length == 0 || N <= 0) {
             return 0;
         }
-        
         int m = grid.length;
         int n = grid[0].length;
         int[][] dirs = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
-        
-        int[][] infectionDay = new int[m][n];
-        for (int i = 0; i < m; i++) Arrays.fill(infectionDay[i], HEALTHY);
-        
-        Set<int[]> activeInfections = new HashSet<>();
+
+        int[][] current = new int[m][n];
+        int healthyCount = 0;
+        boolean hasInfected = false;
         for (int i = 0; i < m; i++) {
             for (int j = 0; j < n; j++) {
-                if (grid[i][j] == 1) {
-                    infectionDay[i][j] = 0;
-                    activeInfections.add(new int[]{i, j});
-                }
+                current[i][j] = grid[i][j];
+                if (grid[i][j] == 0) healthyCount++;
+                else hasInfected = true;
             }
         }
-        
-        if (activeInfections.isEmpty()) return 0;
-        
-        int currentDay = 0;
-        
-        while (!activeInfections.isEmpty()) {
-            currentDay++;
-            
-            // 1. 扩散：健康人需 >= N 个活跃感染邻居才被感染（同时发生）
+        if (!hasInfected) return 0;
+
+        int steps = 0;
+        while (true) {
             int[][] next = new int[m][n];
-            for (int i = 0; i < m; i++) System.arraycopy(infectionDay[i], 0, next[i], 0, n);
-            
-            Set<int[]> newInfections = new HashSet<>();
+            boolean changed = false;
             for (int i = 0; i < m; i++) {
                 for (int j = 0; j < n; j++) {
-                    if (infectionDay[i][j] != HEALTHY) continue;
+                    next[i][j] = current[i][j];
+                    if (current[i][j] != 0) continue;
                     int infectedNeighbors = 0;
                     for (int[] dir : dirs) {
                         int ni = i + dir[0];
                         int nj = j + dir[1];
-                        if (ni >= 0 && ni < m && nj >= 0 && nj < n) {
-                            int d = infectionDay[ni][nj];
-                            if (d >= 0 && currentDay - d < D) infectedNeighbors++;
+                        if (ni >= 0 && ni < m && nj >= 0 && nj < n && current[ni][nj] == 1) {
+                            infectedNeighbors++;
                         }
                     }
                     if (infectedNeighbors >= N) {
-                        next[i][j] = currentDay;
-                        newInfections.add(new int[]{i, j});
+                        next[i][j] = 1;
+                        healthyCount--;
+                        changed = true;
                     }
                 }
             }
-            infectionDay = next;
-            activeInfections.addAll(newInfections);
-            
-            // 2. 康复：感染满 D 天变免疫
-            Set<int[]> toRemove = new HashSet<>();
-            for (int[] cell : activeInfections) {
-                int i = cell[0], j = cell[1];
-                int day = infectionDay[i][j];
-                if (day >= 0 && currentDay - day >= D) {
-                    infectionDay[i][j] = -1;
-                    toRemove.add(cell);
-                }
-            }
-            activeInfections.removeAll(toRemove);
+            if (!changed) return steps;
+            current = next;
+            steps++;
         }
-        
-        return currentDay;
     }
     
     /**
@@ -462,10 +440,10 @@ public class InfectionSpread {
         System.out.println("Test 6 (N=2, 十字形): " + (s.timeToFullInfectionWithThreshold(g6, 2) == 1 ? "✅" : "❌"));
         
         int[][] g7 = {{0,0,0},{0,1,0},{0,0,0}};
-        System.out.println("Test 7 (N=2 中心, D=2): " + (s.daysUntilInfectionStops(g7, 2, 2) == 2 ? "✅" : "❌"));
+        System.out.println("Test 7 (N=2 中心, 无康复): " + (s.daysUntilInfectionStops(g7, 2, 2) == 0 ? "✅" : "❌")); // N=2 时中心无法感染四邻
         
         int[][] g8 = {{1,1,0},{0,0,0},{0,0,0}};
-        System.out.println("Test 8 (N=2 两格, D=2): " + (s.daysUntilInfectionStops(g8, 2, 2) >= 1 ? "✅" : "❌"));
+        System.out.println("Test 8 (N=2 两格, 无康复): " + (s.daysUntilInfectionStops(g8, 2, 2) == 0 ? "✅" : "❌")); // 无格点有 2 个感染邻
         
         // Level 5: 多种病毒竞争
         int[][] g9 = {{1,0,2},{0,0,0},{0,0,0}};
