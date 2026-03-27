@@ -103,8 +103,7 @@ class MachineNode implements MessageHandler {
     public void sendMessage(String toId, String message) {
         MachineNode toNode = MachineNodeRegistry.getMachineNode(toId);
         toNode.receiveMessage(this.id, message);
-    }
-    
+    } 
 }
 
 class MachineNodeRegistry {
@@ -116,6 +115,7 @@ class MachineNodeRegistry {
         return nodes.get(id);
     }
 }
+
 public class NodeCount1 {
 
     public static void main(String[] args) {
