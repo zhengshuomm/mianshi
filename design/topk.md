@@ -68,6 +68,19 @@ flowchart TD
     Query --> Client[Client]
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| 查询能力：固定窗口 vs 任意 lookup window | A: 固定窗口预聚合<br>B: Druid/OLAP 任意窗口查询<br>C: 固定窗口 + Druid hybrid | A ✅ 查询极快，可直接读 Redis。 成本低，架构简单。 ❌ 不支持任意时间范围。 只能覆盖预定义窗口。<br>B ✅ 灵活，支持任意 window 和历史查询。 Rollup 后查询成本可控。 ❌ 查询延迟比 Redis 高。 系统复杂度和存储成本更高。<br>C ✅ 固定热点查询快。 任意查询有 OLAP 兜底。 ❌ 两套 serving path，一致性和新鲜度要解释清楚。 | 如果面试题没要求任意 window，先支持固定窗口。<br>明确说任意 lookup window 走 Druid/OLAP，不用 Redis 硬做。 |
+| Sliding window：two-pointer vs bucket + heap refresh | A: two-pointer / 两个 consumer<br>B: time bucket + heap refresh<br>C: Flink event-time window | A ✅ 精确维护窗口内 count。 Stride 可调，比如每 1 秒/10 秒滑动一次。 ❌ 只适合固定窗口。 对乱序事件、late event、consumer 对齐要求高。<br>B ✅ 逻辑清晰：每分钟一个 bucket，查询时合并最近 N 个 bucket。 容易淘汰旧 bucket。 ❌ 合并多个 bucket 有开销。 如果 key 很多，bucket count 很大。<br>C ✅ 内置 window aggregation、watermark、state cleanup。 容错成熟。 ❌ 需要理解 Flink state 和 checkpoint。 大窗口高基数 key 会导致 state 膨胀。 | 面试里推荐 Flink window + bucketed state。<br>Two-pointer 可以作为固定窗口优化，但不适合任意 window。 |
+| 旧窗口淘汰：lazy update vs 热点 key + lazy vs sketch | A: Lazy update<br>B: 只维护热点 key + lazy update<br>C: Count-Min Sketch + 定期合并 bucket sketch | A ✅ 写路径简单。 不需要每次过期都全量重算 heap。 ❌ 查询时可能多次 pop stale entries。 延迟不稳定。<br>B ✅ 大幅降低 state 和 heap 大小。 适合 trending/top queries。 ❌ 可能漏掉突然变热的新 key。 需要定义 hot threshold。<br>C ✅ 内存更低。 适合超高基数、超大流量。 ❌ 只能估计频率，存在 over-estimation。 过期数据需要按时间 bucket 维护多个 sketch，然后删除旧 sketch；合并 60 个 sketch 也有开销。 | 精确 Top K：bucket + exact count + lazy heap correction。<br>近似 Top K：bucketed Count-Min Sketch 或 heavy hitter algorithm。<br>不要假设一个 global heap 能自动处理过期窗口。 |
+| K 的大小和是否可变 | A: K 小且固定<br>B: K 较大但窗口固定<br>C: K 任意 | A ✅ Heap 内存小。 Redis 直接存 Top K list，查询快。 ❌ 无法回答更大的 K。<br>B ✅ 可以通过离线 MapReduce/Spark 批处理。 成本可控。 ❌ 延迟高，不适合实时。<br>C ✅ 查询灵活。 ❌ 在线系统很难低延迟支持任意 K。 需要 Druid/ClickHouse 或离线计算。 | 在线实时系统只承诺固定小 K。<br>大 K 或任意 K 走 OLAP/offline。<br>面试里要主动问 K 是否固定。 |
+| Redis 存储：sorted set 所有 key vs 只存 Top K vs key count | A: 每个窗口一个 sorted set，存所有 key<br>B: Redis 只存 Top K list/sorted set<br>C: Redis 存每分钟 key count，cron 聚合 Top K | A ✅ 查询 Top K 简单。 支持不同 K。 ❌ 内存大。 每次更新 `O(logN)`。<br>B ✅ 内存小，查询快。 Serving path 简单。 ❌ 不能回答任意 K。 需要 Flink 负责正确维护 Top K。<br>C ✅ 实现简单。 可以按 bucket 删除旧数据。 ❌ Cron 聚合会有延迟。 Key 太多时 Redis hash/sorted set 仍然很大。 | 固定 Top K：Redis 只存结果。<br>如果要支持灵活 K/window：不要靠 Redis，走 Druid/OLAP。 |
+| 精确统计 vs 近似统计 | A: Exact count + heap<br>B: Count-Min Sketch<br>C: Decayed count | A ✅ 结果精确，可解释。 ❌ 高基数和长窗口下 state 很大。 旧数据淘汰复杂。<br>B ✅ 内存低。 写入快。 ❌ 有误差，通常 over-estimate。 需要 bucketed sketch 才能淘汰过期窗口。<br>C ✅ 不需要精确删除旧事件。 趋势排序更平滑。 ❌ 不回答“过去 1 小时精确 Top K”。 参数选择影响结果。 | 如果是产品榜单或精确 reporting，用 exact。<br>如果是 trending/推荐候选，用 sketch 或 decayed count。 |
+| Flink 容错：replica vs checkpoint | A: 每个 worker 做 active replica<br>B: Flink checkpoint + replay<br>C: 输出端 snapshot + offline rebuild | A ✅ 理论上恢复快。 ❌ 资源翻倍。 状态同步复杂。<br>B ✅ Checkpoint state + Kafka offset，恢复语义清晰。 RocksDB state backend 可支持大 state。 ❌ 恢复需要时间。 Checkpoint 太大时会影响性能。<br>C ✅ Redis 丢了可从 Flink/Druid/warehouse 恢复。 Serving cache 不做 source of truth。 ❌ Rebuild 期间结果可能 stale 或不可用。 | Flink 用 checkpoint，不强调 replica。<br>Redis/Druid 输出要幂等。<br>关键窗口用 offline reconciliation 修复。 |
+| Late event 和 duplicate event | A: processing time window<br>B: event time + watermark + allowed lateness<br>C: 离线 reconciliation | A ✅ 简单，延迟低。 ❌ 乱序事件会落到错误窗口。<br>B ✅ 能处理乱序和迟到事件。 Flink 原生支持。 ❌ Watermark 选择影响延迟和准确性。 Late update 会导致已输出 Top K 被修正。<br>C ✅ 可用完整数据修复实时误差。 ❌ 不实时。 | 实时用 event time + watermark。<br>超过 allowed lateness 的事件进入 side output。<br>定期 offline reconciliation 修正重要窗口。 |
+
 ## 关键组件
 
 ### Ingestion API

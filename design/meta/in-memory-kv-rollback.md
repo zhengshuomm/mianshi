@@ -66,6 +66,18 @@ flowchart TD
     Coord --> ShardB
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| Rollback 语义：物理 undo vs 版本指针切换 | A: 物理 undo<br>B: MVCC + visible version 指针<br>C: Copy-on-write snapshot tree | A ✅ 实现直观；rollback 后当前数据结构就是旧状态。 ❌ 需要扫描大量 key；rollback 慢；中途失败会出现半回滚状态；很难处理并发读写。<br>B ✅ rollback 只更新 metadata，速度快；不会破坏历史数据；读路径天然支持 time travel。 ❌ 内存占用更高；读路径要找合适版本；GC 更复杂。<br>C ✅ snapshot 成本低，结构共享好。 ❌ 实现复杂；随机写会产生碎片；GC 和引用计数成本高。 | 面试里推荐 MVCC + namespace visible version。它把 rollback 从数据面操作变成元数据切换，是这题最重要的 Staff+ 亮点。 |
+| 版本粒度：per-key version vs global version | A: per-key version<br>B: global commit version<br>C: hybrid logical clock / per-shard version + vector watermark | A ✅ 简单，写入不依赖全局版本服务。 ❌ 无法表达“整个 namespace 回到同一个时间点”；跨 key 读可能混合不同时间。<br>B ✅ 可以定义一致 snapshot；rollback 语义清晰。 ❌ 全局版本生成可能成为瓶颈；metadata 服务重要性更高。<br>C ✅ 扩展性更好，跨 shard 写入少协调。 ❌ rollback 到全局一致点需要维护 vector clock/watermark，面试讲起来复杂。 | 如果题目强调“回滚整个 KV store”，用 global commit version。规模更大后可以优化成 per-shard version range + 全局 snapshot watermark。 |
+| 持久化：纯内存 vs WAL + snapshot vs replicated log | A: 纯内存<br>B: WAL + periodic snapshot<br>C: quorum replicated log | A ✅ 最低延迟，最低复杂度。 ❌ 节点 crash 后数据和历史版本全部丢失；rollback 能力不可靠。<br>B ✅ 写入 append-only，恢复路径清晰；snapshot 降低 replay 时间。 ❌ WAL fsync 影响写延迟；snapshot 会带来 IO 和 CPU 抖动。<br>C ✅ leader crash 后 follower 可接管；已确认写更不容易丢。 ❌ 写延迟更高；实现复杂，需要 leader election 和 log consistency。 | 基础设计用 WAL + snapshot；高可用场景升级到 leader-follower replicated WAL。面试要明确 durability level 是产品选择，不是免费能力。 |
+| 内存控制：保留所有历史 vs retention + compaction | A: 保留所有历史版本<br>B: 按时间/版本数 retention<br>C: 冷热分层 | A ✅ 任何时间点都可恢复。 ❌ 内存不可控，不适合 in-memory KV。<br>B ✅ 内存可预测；实现相对简单。 ❌ 超过 retention 的版本不能 rollback。<br>C ✅ 热数据在内存，冷历史在 SSD/Object Store，成本低。 ❌ 历史读和远距离 rollback 变慢；需要复杂的分层索引。 | in-memory 系统必须有 retention policy，例如保留最近 24 小时或最近 N 个版本。长期历史落到冷存储，不能把所有历史都放内存。 |
+| 读写一致性：linearizable read vs snapshot read | A: eventual consistency<br>B: 单 key linearizable<br>C: namespace snapshot isolation | A ✅ 延迟最低，扩展简单。 ❌ rollback 后不同客户端可能读到不同当前版本，语义混乱。<br>B ✅ 同一个 key 的写入顺序明确；实现成本可控。 ❌ 跨 key 事务和全局快照仍不保证。<br>C ✅ 读请求绑定一个 `visible_version/epoch`，不会读到混合 rollback 状态。 ❌ Router、Shard、Metadata 都要传递 epoch；读路径复杂度上升。 | 提供单 key linearizable write/read；namespace 级 rollback 通过 epoch 切换保证新请求看到同一个 visible version。长请求可以继续使用请求开始时的 snapshot version。 |
+| Rollback 后继续写：线性历史 vs 分支历史 | A: 线性历史继续前进<br>B: 显式分支<br>C: rollback 生成 compensating writes | A ✅ 简单；新写入拿 V21，只是基于 V10 的可见状态写入。 ❌ V11-V20 变成不可见但仍存在，语义需要解释清楚。<br>B ✅ 历史语义严谨，可以并行保留多条分支。 ❌ API、GC、读路径都复杂很多。<br>C ✅ 审计友好。 ❌ 需要为每个 key 写补偿事件，rollback 很慢。 | KV store 面试里选线性历史继续前进：rollback 更新 visible version，新写入继续使用更大的 commit version，并通过 epoch 表示当前主线。 |
+| 分片和全局 rollback | A: 暂停全局写入后 rollback<br>B: epoch 切换<br>C: 两阶段 rollback | A ✅ 实现简单，correctness 清晰。 ❌ 影响可用性；大规模时 pause window 会更明显。<br>B ✅ Metadata 原子更新 epoch 和 visible version；新请求自动使用新 epoch。 ❌ 所有请求都要带 epoch；旧 epoch 请求要拒绝或按旧 snapshot 完成。<br>C ✅ 可以确保所有 shard 准备好再切换。 ❌ 协调成本高，失败恢复复杂。 | 用 epoch 切换。rollback 是 metadata 原子操作，data shard lazy 生效；旧 epoch 写请求拒绝并要求重试。 |
+
 ## 关键组件
 
 - Router / Partition Map

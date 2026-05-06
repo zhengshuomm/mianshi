@@ -56,6 +56,19 @@ flowchart TD
     Train --> Model
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| 多阶段推荐：召回 vs 粗排 vs 精排 | A: 全量视频直接精排<br>B: 两阶段：召回 + 精排<br>C: 多阶段：召回 + 粗排 + 精排 + 重排 | A ✅ 理论上排序最准确。 ❌ 视频量巨大，不可行。<br>B ✅ 架构简单，适合中等规模。 ❌ 召回候选太多时精排压力高。<br>C ✅ 可扩展，延迟可控。 ❌ 系统复杂，调参和 debug 难。 | 短视频系统使用多阶段。<br>召回追求 recall，精排追求 precision，重排处理体验约束。 |
+| 召回策略 | A: Trending recall<br>B: Embedding ANN recall<br>C: Social/follow recall | A ✅ 冷启动好，稳定。 ❌ 不够个性化。<br>B ✅ 个性化强，能发现长尾兴趣。 ❌ embedding 更新和 ANN index freshness 有成本。<br>C ✅ 用户关注关系强相关。 ❌ 只靠关注会变窄。 | 多路召回，每路有 quota。<br>在线根据用户类型动态调整 quota。<br>新用户 trending/fresh 多一些，老用户 embedding/personalized 多一些。 |
+| Ranking Objective | A: 优化 CTR<br>B: 优化 watch time<br>C: 多目标优化 | A ✅ 简单，反馈多。 ❌ 标题党和低质量短点击可能上升。<br>B ✅ 更贴近短视频消费。 ❌ 可能推荐低价值但上瘾内容。<br>C ✅ 平衡留存、互动、质量、安全。 ❌ 目标权重难调。 | 多目标模型。<br>重点看 long watch、completion、like/share、follow。<br>hide/report、低质量、安全风险作为负向目标和 guardrail。 |
+| 实时兴趣建模 | A: 只用长期画像<br>B: 只用 session 行为<br>C: 长期 + 短期融合 | A ✅ 稳定。 ❌ 无法捕捉用户当下意图。<br>B ✅ 响应快。 ❌ 容易被短期噪声带偏。<br>C ✅ 既稳定又灵活。 ❌ 特征和模型更复杂。 | 长期画像离线更新。<br>session embedding 实时更新。<br>最近连续 skip 某类内容时快速降权。 |
+| 探索 vs 利用 | A: 完全按模型最高分<br>B: 固定比例随机探索<br>C: Bandit / uncertainty-based exploration | A ✅ 短期指标高。 ❌ 新视频和新兴趣无法获得曝光。<br>B ✅ 简单。 ❌ 体验波动大。<br>C ✅ 更智能地探索高潜力内容。 ❌ 实现复杂。 | 保留 fresh/exploration slots。<br>对新视频、小众兴趣、冷启动用户给探索流量。<br>用 guardrail 控制低质量内容比例。 |
+| 多样性和去重 | A: 只按 score 排<br>B: 规则重排<br>C: Diversity-aware reranking | A ✅ 简单。 ❌ feed 可能被同 topic/creator 洗屏。<br>B ✅ 容易控制体验。 ❌ 规则多了会压低模型效果。<br>C ✅ 在 score 和多样性之间平衡。 ❌ 需要 topic/creator embedding 和调参。 | 限制同 creator、同 topic 连续出现。<br>MMR 或 diversity penalty。<br>已看视频强过滤。 |
+| 内容安全和质量 | A: 推荐后再过滤<br>B: 入库时审核 + 推荐时过滤<br>C: 质量分参与排序 | A ✅ 实现简单。 ❌ 浪费 ranking 资源，且可能漏。<br>B ✅ 双重保护。 ❌ 审核延迟影响新视频分发。<br>C ✅ 低质量内容自然降权。 ❌ 质量模型误判会影响创作者。 | 视频上传后先安全审核。<br>推荐链路按 visibility/status 强过滤。<br>质量分、report risk 作为 ranking 负向特征。 |
+| 评价指标 | 见后文系统深挖正文。 | 需要围绕 correctness、latency、throughput、complexity、cost 和 operability 取舍。 | 先给简单可运营方案，再说明规模、可靠性或一致性要求变化时如何演进。 |
+
 ## 关键组件
 
 - Feed API

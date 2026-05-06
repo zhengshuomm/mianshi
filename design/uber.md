@@ -65,6 +65,19 @@ flowchart TD
     Notify --> Push[Push / WebSocket]
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| Geo index：Quadtree vs Geohash vs S2/H3 | A: Quadtree<br>B: Geohash<br>C: S2/H3 cell | A ✅ 能自适应热点区域。 对不均匀地理密度友好。 ❌ 实现复杂。 分布式 shard routing 和边界查询复杂。<br>B ✅ 容易按 prefix 分 shard。 Redis Geo 内部也基于 geohash 思路。 ❌ 高纬度区域形变。 边界附近需要查多个邻居 cell。<br>C ✅ 层级清晰，邻居计算成熟。 比普通 geohash 更适合全球范围。 ❌ 引入额外库和概念复杂度。 | 简化面试可用 geohash。<br>Staff+ 可以说生产系统更倾向 S2/H3 或动态 quadtree。<br>关键是 geo shard + neighbor lookup，而不是单点全局 geo index。 |
+| Location store：Redis Geo vs PostGIS | A: Redis Geo 做 hot path<br>B: PostgreSQL + PostGIS 做 hot path<br>C: Redis hot path + PostGIS durable path | A ✅ `GEOADD/GEOSEARCH` 简单高效。 内存查询快。 ❌ 内存成本高。 TTL、sharding、恢复需要额外设计。<br>B ✅ 持久化强，查询表达力强。 适合审计和历史。 ❌ 高频 update + nearby query 压力大。 热门城市延迟和写放大会明显。<br>C ✅ Redis 扛实时查询，PostGIS 扛持久化和恢复。 读写职责清晰。 ❌ 双写/异步同步带来一致性复杂度。 | 用 Redis Geo 做实时 nearby query。<br>PostGIS 存 durable last location 和历史轨迹。<br>Redis 位置可以最终一致，但不能长期使用过期位置。 |
+| Redis Geo 怎么 shard | A: 单 Redis key 存全城司机<br>B: 按 geohash prefix/cell 拆 key<br>C: 按 city + dynamic hot cell 拆分 | A ✅ 查询简单。 ❌ 热点 key 明显。 无法水平扩展写入和查询。<br>B ✅ 写入按 cell 分散。 查询只查当前 cell + neighbor cells。 ❌ 边界查询需要 scatter-gather。 cell 精度选择影响性能和召回。<br>C ✅ 能针对热点区域进一步拆分。 避免单 cell 写爆。 ❌ routing 和 rebalancing 复杂。 | 使用 `drivers:{region}:{cell_id}` 作为 Redis key。<br>查询时查当前 cell 和相邻 cell。<br>热点 cell 动态拆分或用更高精度 cell。 |
+| 位置更新频率：固定频率 vs adaptive interval | A: 固定频率上报<br>B: 客户端 adaptive interval<br>C: 服务端动态下发策略 | A ✅ 服务端逻辑简单。 ETA 更新稳定。 ❌ 静止或低速司机浪费更新。 高峰期写入量巨大。<br>B ✅ 静止/低速少上报，高速/转向频繁多上报。 显著降低写入压力和移动端耗电。 ❌ 客户端逻辑更复杂。 需要防止恶意或 buggy client 上报过少。<br>C ✅ 服务端可根据供需、区域、ride state 调整频率。 高峰期可以降级非关键更新。 ❌ 策略系统复杂。 | 用 adaptive client interval。<br>接单中、接近 pickup/dropoff、方向变化大时提高频率。<br>静止或空闲时降低频率。 |
+| 司机分配：Redis lock vs DB 状态机 vs durable workflow | A: Redis distributed lock，TTL 10 秒<br>B: DB driver state / ride offer 状态机<br>C: Durable execution framework，如 Temporal / Step Functions | A ✅ 快，适合高并发匹配。 TTL 自动释放不响应司机。 ❌ Redis lock 不是最终一致状态。 需要处理 lock 过期但司机迟到 accept。<br>B ✅ 状态可靠，可审计。 accept/cancel 语义清晰。 ❌ DB 写压力高。 延迟比 Redis lock 高。<br>C ✅ timeout、retry、状态恢复天然支持。 复杂流程更可维护。 ❌ 引入平台依赖。 高频短流程可能成本和延迟偏高。 | Redis lock 做短期 reservation，TTL 约 10 秒。<br>Ride DB 记录最终 offer/ride state。<br>复杂 matching 和 timeout 可以用 Temporal/Step Functions 或 delayed queue 编排。 |
+| 司机不响应：同步等待 vs delayed queue | A: API 同步等待司机响应<br>B: Delayed queue timeout<br>C: Temporal/Step Functions | A ✅ 流程直观。 ❌ API 长时间占用连接。 超时和重试难管理。<br>B ✅ 10 秒后自动触发重新匹配。 workers 可水平扩展。 ❌ 需要处理 accept 和 timeout race。<br>C ✅ workflow state 和 timer 持久化。 failure recovery 更清晰。 ❌ 系统复杂度和平台成本更高。 | 简单场景用 delayed queue。<br>复杂 ride lifecycle 用 durable workflow。<br>accept 时必须检查 ride/offer 是否仍然有效。 |
+| 高峰期和 Surge：普通 queue vs priority queue | A: 普通 FIFO queue<br>B: 按 geo shard 的 priority queue<br>C: Surge pricing + load shedding | A ✅ 简单公平。 ❌ 高价值/紧急请求无法优先。 热点区域 backlog 会拖慢全局。<br>B ✅ 不同区域隔离。 可以按 priority、ETA、乘客等级、等待时间排序。 ❌ 公平性和优先级策略复杂。<br>C ✅ 通过价格调节供需。 降低无效请求和系统压力。 ❌ 用户体验敏感，产品和合规风险。 | Matching queue 按 geo shard 隔离。<br>高峰期使用 priority queue + surge。<br>对低成功概率请求做降级提示或扩大搜索半径。 |
+| Geo-sharding：单城市服务 vs 全局 geo shard | A: 按城市 shard<br>B: 按 geohash/S2 cell shard<br>C: 城市 + cell 混合 | A ✅ 简单，运营边界清楚。 城市级隔离好。 ❌ 城市内部热点仍然需要细分。 跨城边界处理粗糙。<br>B ✅ 分片更细，扩展性更好。 只在边界做 scatter-gather。 ❌ shard routing、neighbor lookup、rebalancing 更复杂。<br>C ✅ 城市级运营简单，热点区域可细分。 适合服务、queue、Redis、DB 都地理分片。 ❌ 需要统一 geo routing library。 | 用城市 + cell 混合。<br>大部分请求只打一个 geo shard。<br>pickup 在 boundary 时 scatter-gather 邻近 shards。 |
+
 ## 关键组件
 
 ### Location Service

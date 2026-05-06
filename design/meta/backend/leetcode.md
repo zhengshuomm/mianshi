@@ -56,6 +56,19 @@ flowchart TD
     ResultSvc --> Notify[SSE / Polling Result]
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| 执行隔离：VM vs Container vs Serverless | A: VM<br>B: Docker Container<br>C: Serverless Function | A ✅ 完整 OS 隔离，攻击逃逸难度更高。 ❌ 资源开销大，启动慢，弹性扩缩容成本高。<br>B ✅ 轻量、启动快、资源利用率高，便于按语言打 image。 ❌ 共享 host kernel，隔离弱于 VM；必须防 container escape。<br>C ✅ 自动扩缩容，运维低，空闲成本低。 ❌ 资源和运行时限制强；自定义系统调用、编译器、长任务支持受限。 | 普通 LeetCode 使用 container runner。<br>高安全场景可用 microVM，比如 Firecracker 类方案。<br>Serverless 可作为短任务 executor，但不要强绑定核心架构。 |
+| Container 安全限制 | A: 只用普通 Docker<br>B: Hardened Container<br>C: Container + MicroVM | A ✅ 实现简单。 ❌ 用户代码可能访问网络、fork bomb、读 host mount、打 kernel syscall。<br>B ✅ 成本低、启动快、安全性足够可控。 ❌ 仍然共享 kernel，需要持续 patch 和 defense-in-depth。<br>C ✅ 既有 container 镜像生态，又有 VM 级隔离。 ❌ 启动和运维复杂度上升。 推荐限制： read-only root filesystem。 test files read-only mount。 no network access。 CPU / memory / pids / disk quota。 seccomp 禁止危险 syscall。 AppArmor/SELinux profile。 timeout 过期 kill。 每次执行独立临时目录，结束销毁。 | 先给简单可运营方案，再说明规模、可靠性或一致性要求变化时如何演进。 |
+| Client 获取结果：Polling vs SSE | A: Polling<br>B: SSE<br>C: WebSocket | A ✅ 实现简单；兼容性好；无长连接资源压力。 ❌ 有几秒延迟；大量用户频繁 polling 会增加 QPS。<br>B ✅ server-to-client 单向推送简单；适合流式状态。 ❌ 兼容性差于普通 HTTP，不支持 IE；长连接占资源；浏览器单域名连接数通常有限。<br>C ✅ 双向低延迟。 ❌ 连接管理和扩展复杂。 | LeetCode submission result 默认 polling。<br>如果要展示逐 test case 进度或编译日志，可以加 SSE。<br>Leaderboard 每几秒 polling，允许轻微延迟。 |
+| Code/Test Storage：DB vs S3 | A: 代码直接存在 DB<br>B: 代码放 S3，DB 存 pointer<br>C: Hybrid | A ✅ 读取简单；submission record 自包含；审计方便。 ❌ 大文件、多文件项目会让 DB 膨胀。<br>B ✅ 成本低，适合大对象；DB 压力小。 ❌ 多一次读取；权限和生命周期管理更复杂。<br>C ✅ 小提交快，大提交省成本。 ❌ 两条读取路径。 | 小函数代码直接存在 Submission DB。<br>大文件/多文件代码和 judge artifact 放 S3。<br>test case 可跟 problem metadata 存引用，大 test file 放 S3。 |
+| Queue 和 Runner 扩展 | A: 单全局 queue<br>B: 按语言/优先级分 queue<br>C: 独立 contest pool | A ✅ 简单。 ❌ contest burst 可能饿死普通提交；某语言积压影响所有语言。<br>B ✅ 不同 runtime 独立扩展；contest 可加优先级。 ❌ 调度器要处理公平性和容量分配。<br>C ✅ 隔离峰值，避免影响普通用户。 ❌ 资源利用率可能降低。 | queue 按语言和优先级拆分。<br>ECS/K8s autoscaling 根据 queue lag、CPU、memory 扩 runner。<br>contest 单独配置 quota 或 dedicated runner pool。 |
+| At-least-once 和结果幂等 | A: 假设 evaluation 只执行一次<br>B: 幂等更新 submission result<br>C: dedup execution | A ✅ 实现简单。 ❌ queue retry、runner crash 都会导致重复执行。<br>B ✅ 重复评测不会破坏最终状态。 ❌ 需要状态机和 version/CAS。<br>C ✅ 减少重复执行浪费。 ❌ 需要 execution lease，runner failure 后要恢复。 | Queue 默认 at-least-once。<br>每个 submission 有状态机：`queued -> running -> success/failed`。<br>Result update 使用 `submission_id + attempt_id` 和 CAS，避免旧 attempt 覆盖新结果。 |
+| Leaderboard：Redis ZSET vs DB | A: DB 实时算排名<br>B: Redis Sorted Set<br>C: Redis + periodic reconciliation | A ✅ source of truth 简单。 ❌ 排名查询和排序成本高，高峰扛不住。<br>B ✅ 更新和 top-N 查询快。 ❌ Redis 不是最终事实源；需要处理漏写、重复写和重算。<br>C ✅ 实时体验好，同时能修正错误。 ❌ 实现多一层 batch/rebuild。 | Redis ZSET 服务实时 leaderboard。<br>SubmissionDB 是 source of truth。<br>每隔几秒或几十秒从 DB 校验/重算，接受小延迟。 |
+| Monitoring / Alert | A: 只看 API latency/error<br>B: queue + runner 指标<br>C: sandbox 安全审计 | A ✅ 容易实现。 ❌ 看不到 judge pipeline 是否堆积。<br>B ✅ 能及时发现 contest backlog、某语言 runner 挂掉。 ❌ 需要按语言、题目、contest 维度拆指标。<br>C ✅ 能发现越权尝试、异常 syscall、资源攻击。 ❌ 日志量大，需要采样和规则。 推荐监控： submission queued/running/success/fail count。 queue lag by language / contest。 runner startup time、execution time、timeout rate。 compile error/runtime error 分布。 OOM/killed/container escape attempt/seccomp denied count。 leaderboard update lag。 Alert：queue lag 暴涨、某语言 runner success rate 异常、sandbox security violation。 | 先给简单可运营方案，再说明规模、可靠性或一致性要求变化时如何演进。 |
+
 ## 关键组件
 
 - Problem Service

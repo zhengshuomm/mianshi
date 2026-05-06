@@ -53,6 +53,18 @@ flowchart TD
     Builder --> StaticIndex
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| Prefix Index：Trie vs Prefix Hashtable | A: Trie<br>B: Prefix Hashtable<br>C: Hybrid | A ✅ Prefix 共享，空间效率好。 可以支持更复杂操作，例如继续扩展、模糊匹配。 FST/DAWG 压缩后很适合生产。 ❌ 实现复杂。 更新不如 hashtable 简单。 分布式 shard 和版本切换要设计。<br>B ✅ 查询非常快，`O(1)` lookup。 实现简单，容易做 cache。 适合固定 top N suggestion。 ❌ 存储膨胀，同一个 suggestion 会重复出现在多个 prefix。 对 long-tail prefix 空间浪费明显。<br>C ✅ 短 prefix 查询极快。 长 prefix 存储更紧凑。 ❌ 两套结构，构建和调试复杂。 | 面试里可以先选 Prefix Hashtable，因为查询路径简单、好解释。<br>生产级可以用 compressed Trie/FST 或 hybrid。<br>如果所有结果都离线预计算成 prefix -> top N，hashtable 很合理。 |
+| 更新链路：Message Queue 实时处理 vs Raw Log Offline Processing | A: Raw log offline processing<br>B: Message queue + stream processing<br>C: Offline static index + realtime overlay | A ✅ 可以做复杂清洗、去 spam、质量过滤。 结果稳定，可回放、可审计。 ❌ 新鲜度差，热点事件反应慢。<br>B ✅ 新鲜度高，可以分钟级更新。 支持实时 region/language trend。 ❌ 容易被 spam 或突发噪音污染。 状态管理和去重更复杂。<br>C ✅ 静态结果稳定，实时 overlay 补热点。 两条链路各自优化。 ❌ Query path 要 merge/dedup/rerank。 | 用 offline log processing 构建 base index。<br>用 message queue/streaming 更新 realtime trending overlay。<br>Query 时合并 static + trending + personalization。 |
+| Real-time Trending：滑动窗口 vs Decay Score | A: 固定滑动窗口 count<br>B: Decayed score<br>C: 短窗口 + 长窗口混合 | A ✅ 语义清晰。 容易解释“最近 N 分钟热门”。 ❌ 窗口边界会有跳变。 多窗口维护成本高。<br>B ✅ 排名更平滑。 不需要精确删除旧窗口事件。 ❌ 结果不是严格“过去 N 分钟”。 Decay 参数会影响排序。<br>C ✅ 短窗口发现爆发，长窗口提供稳定性。 可以减少 spam 突刺影响。 ❌ Scoring 和调参复杂。 | Trending 用 decay 或短长窗口混合。<br>不建议只靠单个短窗口，否则容易被噪声带偏。 |
+| Ranking：popularity vs personalization vs business rules | A: 只按 global popularity<br>B: Contextual ranking<br>C: Personalized rerank | A ✅ 简单稳定。 容易缓存。 ❌ 不够个性化。 不同 region/language 的结果可能不相关。<br>B ✅ 结果更相关。 可以提高 picking rate。 ❌ Cache key 变多，命中率下降。<br>C ✅ 用户体验最好。 可利用用户历史和偏好。 ❌ 延迟更高。 需要处理隐私和冷启动。 | 召回用 prefix index。<br>排序用 popularity + region/language + lightweight personalization。<br>TypeAhead 延迟预算小，不适合太重的 ranking model。 |
+| 缓存策略：全量 prefix cache vs 热门短 prefix cache | A: 缓存所有 prefix<br>B: 只缓存热门短 prefix<br>C: Edge cache + service local memory index | A ✅ 查询快。 ❌ Prefix 组合太多，内存浪费。 更新 invalidation 麻烦。<br>B ✅ 命中高，内存可控。 `a`、`i`、`s` 这种热点 prefix 能被保护。 ❌ 长尾 prefix 仍要查 index。<br>C ✅ 边缘挡住大部分重复短 prefix。 本地内存 lookup 低延迟。 ❌ Index rollout 和 cache invalidation 更复杂。 | 热门短 prefix 放 Redis/edge cache。<br>Suggestion Service 本地加载 read-only index。<br>结果带版本，index 切换时自然失效旧 cache。 |
+| Index 更新：增量更新 vs 全量 rebuild | A: 全量 rebuild<br>B: 增量更新<br>C: 全量 base index + realtime overlay | A ✅ 构建结果一致，容易 rollback。 可做完整质量校验。 ❌ 新鲜度不够。 构建成本高。<br>B ✅ 新鲜度更好。 ❌ Index mutation 复杂。 容易产生不一致或碎片。<br>C ✅ Base index 可控，overlay 负责新鲜热点。 发布和 rollback 简单。 ❌ Query merge 复杂。 | Base index 全量 rebuild + versioned publish。<br>Realtime trending 作为 overlay。<br>这是稳定性和新鲜度的平衡。 |
+| Quality Metrics：Latency vs Picking Rate | A: 只看 latency<br>B: Picking rate / CTR<br>C: Latency + picking rate + downstream success | A ✅ 容易监控。 直接影响输入体验。 ❌ 快但结果差，用户仍然不会选。<br>B ✅ 直接反映用户是否选择建议词。 可用于 ranking A/B test。 ❌ 受 position bias、UI、用户意图影响。<br>C ✅ 同时衡量体验、质量、业务结果。 可以避免只优化点击率导致低质量建议。 ❌ 指标体系更复杂，需要实验平台。 | 性能看 p50/p95/p99 latency。<br>质量看 picking rate、CTR、zero-result rate、reformulation rate。<br>业务看 search success、conversion、session outcome。 |
+
 ## 关键组件
 
 ### TypeAhead API

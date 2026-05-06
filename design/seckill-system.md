@@ -61,6 +61,20 @@ flowchart TD
     EventBus --> Cache[(Status Cache)]
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| 库存扣减：DB 直接扣减 vs Redis 预扣 vs 库存令牌 | A: DB 直接扣减<br>B: Redis 原子预扣<br>C: 库存令牌预生成 | A ✅ source of truth 简单；事务清晰。 ❌ 秒杀峰值会打爆热点库存行，write contention 严重。<br>B ✅ 低延迟，高吞吐；Lua 可原子检查库存和用户去重。 ❌ Redis 和 DB 存在一致性问题，需要异步落库和 reconciliation。<br>C ✅ 只有拿到 token 的请求进入订单链路，天然削峰。 ❌ token 发出但订单创建失败时，需要回收或补偿。 | 秒杀主路径用 Redis token / 原子预扣。<br>DB 是最终库存账本。<br>用 reconciliation 修正 Redis 预扣和 DB 最终订单之间的差异。 |
+| 防超卖：Pessimistic Lock vs Optimistic Lock vs Atomic Operation | A: Pessimistic lock<br>B: Optimistic lock<br>C: Atomic conditional update / Lua | A ✅ 正确性直观。 ❌ 秒杀热点行锁等待严重，吞吐差。<br>B ✅ 无锁等待，平时性能好。 ❌ 秒杀场景冲突极高，大量 CAS 失败重试会放大压力。<br>C ✅ 单次原子判断 `stock > 0` 并扣减，延迟低。 ❌ 单 key 仍可能成为 Redis 热点；跨系统一致性要补偿。 | Redis Lua 做入口原子扣减。<br>DB 落库用唯一约束和库存流水保证最终账本。<br>对极热点 SKU 使用库存分桶，减少单 key 热点。 |
+| Push 请求还是排队：直接打下单 API vs Virtual Queue | A: 所有用户直接请求下单<br>B: Virtual queue<br>C: Token gate | A ✅ 架构简单，用户无等待。 ❌ 活动开始瞬间后端会被洪峰打穿。<br>B ✅ 保护下单核心链路；可以告诉用户排队位置。 ❌ 实现排队公平性、过期、重复入队、断线恢复更复杂。<br>C ✅ 更强削峰，流量可控。 ❌ 用户体验更硬，可能被认为不公平。 | 普通活动直接限流 + Redis 预扣。<br>超热点活动使用 Redis virtual queue。<br>进入下单前必须校验 queue token，防止绕过。 |
+| 同一用户重复请求：前端禁用 vs Idempotency vs Unique Constraint | A: 前端禁用按钮<br>B: Idempotency key<br>C: DB unique constraint | A ✅ 简单，减少误触。 ❌ 无法防刷新、重试、脚本请求、网络超时。<br>B ✅ 客户端重试返回同一 `request_id`，不会重复入队。 ❌ 需要保存 key 和请求 hash，处理过期策略。<br>C ✅ 最终兜底，防止一个用户创建多单。 ❌ 如果只靠 DB，重复请求已经进入下游，浪费资源。 | 前端禁用只是体验。<br>Seckill Service 用 idempotency key 和 Redis `user_claim` 快速去重。<br>Order DB 用 `unique(activity_id, user_id)` 做最终兜底。 |
+| 同步创建订单 vs 异步创建订单 | A: 同步创建订单<br>B: 异步创建订单<br>C: 同步预占 + 异步订单 | A ✅ 用户立刻拿到订单结果；状态简单。 ❌ 订单 DB、支付、库存都暴露在秒杀峰值下。<br>B ✅ 下单 API 快速返回；MQ 削峰；worker 可水平扩展。 ❌ 用户需要查询 `request_id`；accepted 不代表最终有订单。<br>C ✅ Redis 预扣成功后用户基本抢到资格。 ❌ 订单落库失败要补偿，系统复杂。 | 秒杀用同步 Redis 预占 + 异步订单创建。<br>明确返回 `accepted/queued`，不要承诺订单已创建。<br>用户通过 polling/SSE 获取最终订单状态。 |
+| 支付超时：库存一直占用 vs Expiration 状态机 | A: 抢到后永久占库存直到用户支付<br>B: 10 分钟支付 hold<br>C: 支付成功后再确认库存 | A ✅ 实现简单。 ❌ 恶意用户可以占库存不付款，库存利用率低。<br>B ✅ 用户有支付时间；库存可自动回收。 ❌ 支付 callback 和过期取消有竞态。<br>C ✅ 不占库存。 ❌ 支付后没货体验差，退款复杂。 | 订单创建后 `pending_payment`，带 `expires_at`。<br>支付成功只能 `pending_payment -> paid`。<br>超时只能 `pending_payment -> cancelled`。<br>用 CAS/transaction 保证只有一个状态转换成功。 |
+| Redis 和 DB 一致性：强同步 vs 异步落库 vs Reconciliation | A: Redis 扣减后同步写 DB<br>B: Redis 扣减后写 MQ，异步落库<br>C: DB 预生成库存流水，Redis 只是缓存 | A ✅ 结果更快落到 source of truth。 ❌ DB 仍在高峰路径上，容易拖慢请求。<br>B ✅ 入口低延迟；MQ 削峰。 ❌ MQ/worker 失败时需要补偿和重放。<br>C ✅ 审计更清楚。 ❌ 预生成和回收 token 成本更高。 | Redis 预扣 + MQ 异步落库。<br>OrderDB/InventoryDB 是最终事实。<br>定期 reconciliation：Redis claimed count、MQ processed count、OrderDB paid/pending/cancelled 对账。 |
+| 结果通知：Polling vs SSE | A: Client polling<br>B: SSE<br>C: WebSocket | A ✅ 实现简单，兼容性好，无长连接管理。 ❌ QPS 增加，结果有几秒延迟。<br>B ✅ 用户体验好，适合 server-to-client 状态更新。 ❌ 长连接占资源，断线重连和浏览器连接数限制要处理。<br>C ✅ 低延迟双向通信。 ❌ 秒杀结果通知一般不需要这么重。 | 下单结果默认 polling。<br>Virtual queue 位置可以用 SSE。<br>正确性不依赖推送，客户端随时可用 `request_id` 查询最终状态。 |
+| 防刷和安全：限流 vs 验证码 vs 风控 | A: IP/user/device 限流<br>B: 验证码 / 签名 token<br>C: 风控评分 | A ✅ 简单有效，能挡明显洪峰。 ❌ 代理 IP、设备伪造会绕过；误伤真实用户。<br>B ✅ 提高脚本成本；防止绕过页面直接打接口。 ❌ 影响用户体验；验证码服务本身也要抗峰值。<br>C ✅ 可以结合账号历史、设备、行为、IP 信誉。 ❌ 模型和规则复杂，可能误杀。 | Gateway 限流 + WAF + captcha/token + risk score。<br>下单 token 短期有效，并绑定 user/device/activity。<br>安全检查不要放在订单 DB 后面，否则已经太晚。 |
+
 ## 关键组件
 
 - CDN / Static Page

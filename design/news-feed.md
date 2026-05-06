@@ -56,6 +56,18 @@ flowchart TD
     FeedSvc --> UserDB[(User Info Store)]
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| SQL vs NoSQL | A: SQL<br>B: NoSQL<br>C: Hybrid | A ✅ 事务强，查询灵活，数据一致性好。 ❌ 大规模 timeline、follow graph、fanout 写入很难水平扩展。<br>B ✅ 按 `user_id / tweet_id` 分区，吞吐高，扩展简单。 ❌ 不能依赖复杂 JOIN，需要为查询模式设计表。<br>C ✅ User/account 配置可用 SQL，tweet/timeline 用 NoSQL/cache。 ❌ 多套存储带来一致性和运维复杂度。 | User metadata 可放 SQL。<br>Tweet、timeline、follow edge 放 NoSQL 或 specialized graph store。<br>面试里强调：feed 是 read model，不是 source of truth。 |
+| Push vs Pull | A: Pull / fanout-on-read<br>B: Push / fanout-on-write<br>C: Hybrid | A ✅ 写 tweet 很便宜；不需要给不活跃用户维护 timeline。 ❌ 读 feed 时要查很多 followees 并 merge，延迟高。<br>B ✅ 读 feed 很快，直接读 home timeline cache。 ❌ 明星用户发 tweet 写放大巨大。<br>C ✅ 普通用户 push，大 V pull，平衡读写成本。 ❌ 读路径要合并 pushed timeline 和 celebrity pull results。 | 默认 hybrid。<br>普通作者 fanout 到活跃 followers。<br>大 V 不 fanout，读 feed 时从 author timeline 拉最近 tweets merge。 |
+| Active User Cache 策略 | A: 缓存所有用户 timeline<br>B: 只缓存活跃用户<br>C: 分层缓存 | A ✅ 读路径简单。 ❌ 大量不活跃用户浪费内存。<br>B ✅ 内存成本可控；命中主要流量。 ❌ 不活跃用户回来时首次读取较慢。<br>C ✅ hot users timeline 放内存，warm users 放 SSD/NoSQL。 ❌ 系统复杂，cache consistency 更难。 | 只保留过去 30 天活跃用户。<br>每个 home timeline 只存几百个 tweet ids。<br>不活跃用户回来时从 Graph Service + Tweet DB rebuild。 |
+| Partition / Replication | A: 按 `user_id` 分区 timeline<br>B: 按 `tweet_id` / `author_id` 分区 tweets<br>C: 多副本 + read replica | A ✅ 读某个用户 feed 很快；cache/locality 好。 ❌ 超级活跃用户或热门用户可能产生热点。<br>B ✅ 作者 timeline 查询自然；tweet 写入均匀。 ❌ 读 home feed 需要批量跨分区取 tweet body。<br>C ✅ 提升读吞吐和可用性。 ❌ 复制延迟导致读到旧数据。 | Home timeline 按 `user_id` 分区。<br>Tweet store 按 `author_id` 或 `tweet_id` 分区。<br>多 AZ replication，读路径容忍短暂 eventual consistency。 |
+| Cache Invalidation 和 Privacy | A: 写时清理所有 cache<br>B: 读时过滤<br>C: 异步清理 + 读时兜底 | A ✅ cache 更干净。 ❌ 删除 tweet、block、private change 可能需要清理海量 timelines。<br>B ✅ 避免大规模 cache invalidation。 ❌ 读路径多一次 policy check；可能取到的候选 tweets 被过滤后不足一页。<br>C ✅ 最终清理缓存，同时保证读时不会泄露不可见内容。 ❌ 实现复杂，需要 policy version 或 visibility check。 | Privacy/security 必须在返回前做 final check。<br>Cache 里的 tweet_id 只是候选集合，不代表一定可见。<br>删除、block、private change 走异步清理，但读时过滤兜底。 |
+| Follow/Unfollow 后 Timeline 如何处理 | A: follow 时立即 backfill<br>B: unfollow 时立即删除 timeline 里的历史 tweets<br>C: lazy rebuild / read-time filter | A ✅ 体验好。 ❌ follow 大量用户时写放大明显。<br>B ✅ 用户不会再看到 unfollow 对象内容。 ❌ 需要扫描 timeline cache，成本高。<br>C ✅ 写路径轻。 ❌ timeline 里可能有 stale candidate，需要读时过滤。 | follow 可异步 backfill 最近少量 tweets。<br>unfollow/block 必须读时过滤，异步清理 cache。<br>关键安全边界在 Policy check，不在 cache 是否干净。 |
+| Monitoring / Alert | A: 只看服务 QPS/latency/error<br>B: 加 pipeline freshness 指标<br>C: synthetic users / canary feed | A ✅ 容易落地。 ❌ 看不出 feed 质量问题，比如 timeline stale。<br>B ✅ 能发现 MQ lag、fanout delay、cache rebuild 慢。 ❌ 需要端到端 trace 和业务指标。<br>C ✅ 能检测“发 tweet 后 follower 是否看到”的真实体验。 ❌ 需要维护测试账号和预期结果。 推荐监控： Feed read p50/p95/p99 latency。 Timeline cache hit rate。 Fanout queue lag。 Tweet publish to visible latency。 Rebuild timeline latency。 Privacy filter deny count。 Alert：queue lag 暴涨、cache hit rate 下降、feed empty rate 异常、policy service error。 | 先给简单可运营方案，再说明规模、可靠性或一致性要求变化时如何演进。 |
+
 ## 关键组件
 
 - Tweet Service

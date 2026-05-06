@@ -59,6 +59,19 @@ flowchart TD
     Reaper --> DispatchQ
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| Due Job 发现：DB Polling vs Delayed Message Queue | A: Scheduler poll DB<br>B: 创建 job 时直接放 delayed message<br>C: Hybrid | A ✅ job schedule durable；容易查询、取消、修改；对很远未来的任务友好。 ❌ poll interval 会影响调度精度；需要设计 time bucket/shard 避免热点扫描。<br>B ✅ 到点自动投递，scheduler 逻辑简单。 ❌ 很多 MQ 对超长 delay 支持不好；修改/取消 delayed message 困难；消息堆积难管理。<br>C ✅ DB 存完整 schedule；scheduler 提前 lookahead，把即将执行任务放进 queue/delay queue。 ❌ 两层状态，需要处理 DB 和 queue 的一致性。 | 用 DB 作为 schedule source of truth。<br>Scheduler 提前扫描未来 N 秒，把 execution 放入 queue。<br>如果 MQ 支持 delay，可以把 “即将执行” 的任务用 delayed message 精准释放。 |
+| Schedule Table 设计：job_id 分区 vs time_bucket 分区 | A: `PK=job_id, SK=next_execution`<br>B: `PK=time_bucket, SK=next_execution#job_id`<br>C: `PK=time_bucket#shard_id, SK=next_execution#job_id` | A ✅ 查询单个 job 简单。 ❌ 找 due jobs 很难，需要 GSI 或全局扫描。<br>B ✅ 天然支持扫描当前时间窗口。 ❌ 热门时间 bucket 会成为热点，比如整点大量任务。<br>C ✅ scheduler 可以并发扫多个 shard；降低热点。 ❌ 查询某个用户或 job 的 schedule 需要额外 GSI。 | schedule 表主查询是 “哪些 job 到点了”，所以主键应围绕 time bucket 设计。<br>用 `shard_id = hash(job_id) % N` 打散同一时间 bucket。<br>用户查询用 GSI：`user_id, next_execution`。 |
+| 调度准确性：Poll Interval vs Lookahead vs Delay Queue | A: 短 poll interval<br>B: lookahead window<br>C: delay queue 精准释放 | A ✅ 容易实现。 ❌ DB 扫描压力大；poller 数量多时容易重复抢任务。<br>B ✅ 提前把未来任务拿出来，减少临界时间扫描压力。 ❌ 提前 dispatch 后，如果 job 被取消或修改，需要 queue 侧再校验 schedule version。<br>C ✅ 触发时间更准确；worker 不需要忙等。 ❌ 取消/修改复杂；不同 MQ delay 能力差异大。 | DB poller 每几秒扫一个 lookahead window。<br>execution message 带 `scheduled_at` 和 `schedule_version`。<br>Worker 执行前重新检查 job 状态和 version，防止取消后的任务仍被执行。 |
+| Scheduler 和 Worker 是否分离 | A: Scheduler 直接执行任务<br>B: Scheduler 只 dispatch，Worker 执行<br>C: 多级 scheduler | A ✅ 架构简单。 ❌ 慢任务会阻塞调度；失败恢复复杂；扩展维度混在一起。<br>B ✅ 调度和执行独立扩展；worker failure 不影响 schedule scanning。 ❌ 需要 queue、execution state、幂等和 retry。<br>C ✅ 全局 scheduler 只分发 shard，本地 scheduler 管细粒度执行。 ❌ 架构复杂，debug 成本高。 | 面试里明确说 separating query and task execution。<br>Scheduler 是控制面，Worker 是执行面。<br>这能避免调度准确性被任务执行时间拖垮。 |
+| Worker Failure：Health Check Pull vs Job Leasing vs Visibility Timeout | A: health check pull<br>B: job leasing<br>C: SQS visibility timeout | A ✅ 实现直观。 ❌ worker 活着不代表 job 还在正常执行；网络抖动会误判；无法精确恢复单个 execution。<br>B ✅ 每个 execution 有 `lease_until`，过期即可重试。 ❌ 需要实现 lease CAS、heartbeat、reaper，相当于分布式锁。<br>C ✅ native 支持；worker 未 delete message 时，timeout 后自动重新可见。 ❌ 长任务需要 heartbeat extend visibility；SQS 语义是 at-least-once。 | 如果用 SQS，优先使用 visibility timeout + heartbeat。<br>如果自建执行状态，用 job lease，但要用 CAS 防止两个 worker 同时拿到同一个 execution。<br>不要只靠 worker health check 判断 job 是否失败。 |
+| Retry：Visible Failure vs Invisible Failure | A: visible failure<br>B: invisible failure<br>C: DLQ | A ✅ 可以立即按照 retry policy 处理。 ❌ 只能覆盖主动失败，不能覆盖 crash、OOM、网络隔离。<br>B ✅ 通过 lease timeout / visibility timeout 可以恢复。 ❌ 恢复有延迟；可能导致重复执行。<br>C ✅ 隔离坏任务，避免无限重试拖垮系统。 ❌ 需要人工或自动修复流程，否则 DLQ 会变成垃圾堆。 | visible failure 立即 retry with exponential backoff。<br>invisible failure 等 lease timeout 后 retry。<br>超过 retry 上限进 DLQ，并在 history 里保留错误原因。 |
+| At-least-once 和幂等 | A: 假设 worker 只执行一次<br>B: deduplication table<br>C: job 本身设计成幂等 | A ✅ 业务代码简单。 ❌ queue redelivery、worker timeout、scheduler retry 都会导致重复执行。<br>B ✅ 通过 `job_id + execution_id` 或业务 idempotency key 防重复。 ❌ 需要业务方配合定义幂等键。<br>C ✅ 最稳健，系统层重复投递不会破坏业务。 ❌ 不是所有业务天然幂等，需要额外状态。 | Scheduler 承诺 at-least-once，不承诺 exactly-once。<br>Worker 执行前写 execution state，业务侧使用 idempotency key。<br>对外部副作用，用 dedup table 或 transactional outbox。 |
+| Worker Runtime：Kubernetes/EC2 vs Lambda | A: EC2 / Kubernetes workers<br>B: Lambda<br>C: Hybrid | A ✅ 成本可控；适合长连接、长任务、大内存任务。 ❌ 需要容量规划和运维。<br>B ✅ 自动扩缩容；空闲成本低。 ❌ 有执行时间限制、cold start、并发限制；不适合长任务。<br>C ✅ 长任务走 K8s，短突发任务走 Lambda。 ❌ 执行环境和 observability 更复杂。 | 默认 K8s/EC2 worker pool。<br>短小、突发、无状态任务可以支持 Lambda executor。<br>Worker runtime 是 executor plugin，不要和 scheduler core 强绑定。 |
+
 ## 关键组件
 
 - Job API

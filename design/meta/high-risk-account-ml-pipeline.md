@@ -65,6 +65,19 @@ flowchart TD
     Decision --> Review[Manual Review Queue]
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| 在线同步拦截 vs 异步检测 | A: 同步评分并立即决策<br>B: 异步检测和事后处置<br>C: 同步轻模型 + 异步重模型 | A ✅ 可以实时阻止损失；用户路径中能做 challenge。 ❌ 增加主链路延迟；风控服务故障会影响业务可用性。<br>B ✅ 不拖慢主链路；可以用更复杂模型。 ❌ 可能放过短时间攻击；处置有延迟。<br>C ✅ 同步路径低延迟，异步路径提高 recall。 ❌ 策略复杂，需要合并多个模型/规则输出。 | 对资金、账号安全用同步轻模型；对内容/社交滥用用异步重模型补充。高风险但不确定的 case 进入人工审核。 |
+| Label 设计：人工审核、业务结果、用户申诉 | A: 只用人工审核 label<br>B: 只用业务结果 label<br>C: 多来源 label + confidence | A ✅ label 可解释，质量相对高。 ❌ 覆盖不足；reviewer bias 明显；成本高。<br>B ✅ 客观，规模大。 ❌ label delay 长；只能覆盖已暴露问题；容易漏掉未被发现的坏账户。<br>C ✅ 覆盖广，可给不同 label source 加权。 ❌ label 冲突和噪声处理复杂。 | 用多来源 label：人工审核、申诉结果、chargeback、abuse report、honeypot、规则高置信命中。训练时保留 `label_source/confidence/label_time`。 |
+| Feature freshness：离线特征 vs 实时特征 | A: 只用离线 batch features<br>B: 只用实时 streaming features<br>C: 离线长期画像 + 实时短窗口 | A ✅ 稳定，成本低，特征复杂度高。 ❌ 对突发攻击不敏感。<br>B ✅ 反应快。 ❌ 窗口状态成本高；late event 和重复事件处理复杂。<br>C ✅ 既有稳定画像，又能捕捉突发异常。 ❌ 训练-serving consistency 更难。 | 混合特征：长期账户画像、历史信誉、图关联风险来自离线；短时间失败率、IP/设备爆发、行为速度来自实时流。 |
+| 特征一致性：训练-serving skew | A: 训练和在线各自写特征逻辑<br>B: 统一 Feature Store 和 feature definition<br>C: point-in-time join + 在线特征回放 | A ✅ 实现快。 ❌ 容易 skew；线上指标不可预测。<br>B ✅ 特征定义一致，复用高。 ❌ 平台建设成本高；feature lifecycle 需要治理。<br>C ✅ 避免 data leakage，可以复现线上决策。 ❌ 数据工程复杂，存储成本高。 | 用 Feature Store + point-in-time correct training data。每次在线决策记录 feature vector，方便 debug 和 replay。 |
+| 模型选择：规则、GBDT、深度模型、图模型 | A: 规则引擎<br>B: GBDT/Logistic Regression<br>C: Deep Learning / GNN | A ✅ 可解释，发布快，适合紧急止血。 ❌ 泛化差，容易被攻击者绕过。<br>B ✅ 效果强、延迟低、可解释性较好。 ❌ 对序列行为和复杂图关系表达有限。<br>C ✅ 能捕捉复杂模式和团伙风险。 ❌ 训练/ serving 成本高，可解释性差，上线风险更高。 | 面试推荐规则 + GBDT 作为同步主模型，GNN/序列模型作为异步信号或离线图风险分，再写入 Online Feature Store。 |
+| 阈值和动作策略：单阈值 vs 分层决策 | A: 单一 block threshold<br>B: 多档策略<br>C: 按 action_type 动态阈值 | A ✅ 实现简单。 ❌ 不能区分不同风险等级；误杀高。<br>B ✅ 低风险 allow，中风险 challenge/review，高风险 block；用户体验更好。 ❌ 阈值调参和监控更复杂。<br>C ✅ 提现比浏览更严格，策略贴合业务。 ❌ 需要按场景维护模型校准和策略。 | 用分层决策：allow、step-up authentication、rate limit、manual review、temporary suspend、permanent ban。阈值按 action_type 和用户 segment 分开调。 |
+| 高风险团伙检测：单账户特征 vs 图关联 | A: 只看单账户特征<br>B: 离线图计算风险分<br>C: 在线邻居特征 | A ✅ 简单，在线低延迟。 ❌ 对团伙攻击 recall 差。<br>B ✅ 能发现共享设备、IP、支付方式、邀请链路的团伙。 ❌ 实时性弱。<br>C ✅ 可以实时判断新账户是否连接到高风险子图。 ❌ 在线图查询成本高，热点实体容易放大延迟。 | 离线图风险分 + 在线轻量邻居计数。复杂图模型离线跑，在线只读取聚合后的风险特征。 |
+| Failover 和降级策略 | A: fail open<br>B: fail closed<br>C: cached decision / fallback model | A ✅ 业务可用性高。 ❌ 攻击窗口变大。<br>B ✅ 安全优先。 ❌ 可能导致大面积用户不可用。<br>C ✅ Feature Store 或模型故障时仍可给出保守决策。 ❌ 缓存过期和策略一致性要管理。 | 按 action_type 分级：低风险 fail open，高风险 fail closed 或 require challenge；同时保留规则引擎和上一个稳定模型作为 fallback。 |
+
 ## 关键组件
 
 - Risk Scoring API

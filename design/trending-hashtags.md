@@ -49,6 +49,19 @@ flowchart TD
     API --> Cache[(Response Cache)]
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| 精确统计 vs 近似统计 | A: 精确 count<br>B: Count-Min Sketch / approximate heavy hitters<br>C: Hybrid | A ✅ 准确，可 debug。 ❌ 高流量 hashtag 写热点明显，unique user 统计成本高。<br>B ✅ 内存低，吞吐高。 ❌ 有误差，不能准确解释每个 tag 的 count。<br>C ✅ 用 approximate 找候选，再对候选精确计数。 ❌ 架构复杂。 | 实时 TopK 可以近似候选 + 精确候选计数。<br>对外展示的 top hashtags 要能解释 score 来源。 |
+| Sliding Window 怎么维护 | A: 每个事件更新所有窗口<br>B: minute buckets + query/worker 聚合<br>C: bucket + rolling TopK | A ✅ 查询快。 ❌ 写放大大。<br>B ✅ 存储清晰，窗口可组合。 ❌ 查询时聚合多 bucket 成本高。<br>C ✅ 实时榜单快，历史也可重建。 ❌ 窗口过期时需要从 score 中移除旧 bucket 的贡献。 | 维护 1min buckets。<br>Stream job 同时维护常用窗口：15min、1h、24h。<br>不支持任意 lookup window；如果要求任意窗口，使用 Druid/ClickHouse 查询历史。 |
+| TopK 数据结构 | A: Redis Sorted Set<br>B: Flink keyed state + heap<br>C: Druid/ClickHouse | A ✅ 实现简单，TopN 查询快。 ❌ 更新频繁时内存和写压力大；多 shard 合并复杂。<br>B ✅ 实时计算强，窗口语义好。 ❌ 服务在线 query 还要 sink 到 serving store。<br>C ✅ 支持 ad-hoc group by 和历史窗口。 ❌ 实时首页查询延迟和成本可能高于 Redis serving view。 | Stream 聚合计算 TopK，Redis ZSET 服务首页。<br>历史趋势和任意分析走 OLAP。 |
+| Hot Hashtag / Hot Partition | A: 按 hashtag 分区<br>B: 局部聚合后全局合并<br>C: hashtag + random shard | A ✅ 同 hashtag 聚合简单。 ❌ 超级热点 hashtag 会打爆单 partition。<br>B ✅ 先在多个 partition 做 partial count，再汇总。 ❌ 需要二阶段聚合，延迟增加。<br>C ✅ 热点 tag 被拆散。 ❌ 读取/合并时要聚合多个 shard。 | Extractor 后先按 source partition 局部聚合。<br>再按 hashtag 做 global aggregation。<br>对检测到的 hot tag 使用 sub-shard。 |
+| Trending Score：count vs velocity vs acceleration | A: 纯 count<br>B: 增长率 / velocity<br>C: 综合 score | A ✅ 简单可解释。 ❌ 长期热门话题一直霸榜，不代表正在 trending。<br>B ✅ 更能发现新趋势。 ❌ 小基数 tag 容易因为少量增长冲上榜。<br>C ✅ 平衡热度、新鲜度、增长和质量。 ❌ 解释和调参复杂。 推荐 score： spam_penalty 同时设置 minimum volume，避免小样本噪声。 | 先给简单可运营方案，再说明规模、可靠性或一致性要求变化时如何演进。 |
+| 去重和反作弊 | A: 只按 post count<br>B: unique user count<br>C: trust-weighted count | A ✅ 简单。 ❌ bot 和刷屏极易操纵榜单。<br>B ✅ 降低单用户刷量。 ❌ 需要近似或精确 UV 统计。<br>C ✅ 账号信誉、内容质量、互动质量共同影响趋势。 ❌ 模型复杂，可能有偏差。 | 一条 post 内重复 hashtag 只算一次。<br>同一用户短时间重复使用同 tag 降权。<br>使用 HyperLogLog 估算 unique users。<br>反作弊延迟判定由 offline reconciliation 修正。 |
+| Region / Language / Personalization | A: 全球一个榜<br>B: 按 region/lang 维护榜单<br>C: 个性化 trending | A ✅ 简单。 ❌ 不同地区语言差异巨大，用户体验差。<br>B ✅ 结果更相关。 ❌ 榜单数量增加，存储和计算放大。<br>C ✅ 更贴近用户兴趣。 ❌ 不能为每个用户实时计算完整 TopK。 | 先维护 global、region、language 三层榜单。<br>个性化用基础榜单混合，而不是每个用户单独算。<br>例如 tech 用户增加 tech/community hashtags 权重。 |
+| Reconciliation 和可解释性 | A: 只信实时流<br>B: 离线重算<br>C: 实时 + 离线校准 | A ✅ 架构简单。 ❌ late events、重复事件、反作弊延迟都会影响榜单。<br>B ✅ 准确，可审计。 ❌ 延迟高。<br>C ✅ 实时体验和最终准确性兼顾。 ❌ 同一窗口排名可能被修正。 | 实时榜单服务用户体验。<br>离线重算用于历史报表、模型训练、debug。<br>对外展示当前榜单不频繁回改，避免用户困惑。 |
+
 ## 关键组件
 
 - Post Event Kafka

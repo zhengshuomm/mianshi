@@ -53,6 +53,18 @@ flowchart TD
     ZK[ZooKeeper / Metadata Store] --> Controller
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| 数据分区：Range Partition vs Consistent Hash | A: Range partition<br>B: Consistent hash<br>C: Virtual nodes | A ✅ range query 友好；分区边界直观。 ❌ 顺序写容易打到同一个 partition；split/merge 复杂。<br>B ✅ 扩容缩容时只迁移少量 key；负载分布更均匀。 ❌ range query 很差；热点 key 仍然会形成单点压力。<br>C ✅ rebalance 粒度小；节点异构时可以分配不同 vnode 数量。 ❌ metadata 更多；迁移调度更复杂。 | 通用 KV 选 consistent hash + virtual nodes。<br>如果业务明确需要 range scan，再考虑 range partition 或单独索引。 |
+| 复制策略：Leader-Follower Async vs Quorum | A: leader + followers async replication<br>B: quorum write/read<br>C: sync replication to all | A ✅ 写延迟低；实现比多主简单。 ❌ leader ack 后宕机但还没复制，可能丢最新写；follower 读可能 stale。<br>B ✅ `W + R > N` 时可读到较新版本。 ❌ 写延迟更高；尾延迟受慢副本影响；冲突处理更复杂。<br>C ✅ 一致性最强。 ❌ 可用性和延迟差，一个慢副本拖慢整体。 | 默认 leader-follower async，提供 consistency option。<br>对普通 cache-like KV，用 `ONE`。<br>对配置/元数据类 KV，用 `QUORUM` 或走强一致存储。 |
+| Leader Election 和 WAL Recovery | A: 简单 follower election<br>B: 基于 consensus 的 election<br>C: Dynamo-style 无 leader | A ✅ 读写路径清晰。 ❌ 必须保证新 leader 拥有足够新的 log，否则会丢写或回滚。<br>B ✅ leader 选举和 log commit 有严格一致性。 ❌ 吞吐和延迟成本高，不适合所有数据都走共识。<br>C ✅ 任意 coordinator 可写，可用性高。 ❌ 冲突解决、read repair、vector clock 等复杂。 | 如果题目强调 low latency 和高可用 KV，可选 leader-follower + async/quorum。<br>面试时要讲清楚：WAL 解决本机 crash recovery，不能替代跨节点 consensus。<br>election 时要比较 term/log offset，避免落后 follower 被选成 leader。 |
+| 临时离线：Hinted Handoff vs Full Repair | A: hinted handoff<br>B: read repair<br>C: anti-entropy repair / snapshot rebuild | A ✅ 恢复快；不用立即做全量数据拷贝。 ❌ hint 存储有限；长期离线后 hint 可能过期或太大。<br>B ✅ 按需修复，成本分散。 ❌ 冷数据长期不被读就长期不修复。<br>C ✅ 能系统性修复副本差异。 ❌ IO 和网络成本高，需要限速，避免影响线上读写。 | 短暂离线用 hinted handoff。<br>长期离线用 snapshot + incremental log catch-up。<br>后台定期 anti-entropy repair，保证副本最终收敛。 |
+| 存储引擎：LSM vs B+Tree vs Columnar | A: LSM Tree<br>B: B+Tree<br>C: Columnar storage | A ✅ 顺序写，适合 SSD；写吞吐高；SSTable immutable 便于压缩和传输。 ❌ compaction 带来 write amplification；读可能查多个 SSTable。<br>B ✅ 查询路径稳定；range scan 友好。 ❌ 随机写多；page split 和 in-place update 对 SSD 不如顺序写友好。<br>C ✅ 压缩率高，聚合快。 ❌ point lookup KV 不合适；单 key 更新和整 value 读取不是强项。 | 通用 KV 选 LSM + SSD + compression。<br>如果 value 很宽，可以支持 column-family 或 partial field fetch。<br>不要把 OLAP columnar storage 和 KV storage 混为一谈。 |
+| 读路径优化：Bloom Filter / SSTable Index / Cache | A: 只扫 SSTables<br>B: Bloom filter + sparse index<br>C: Block cache / Row cache | A ✅ 实现简单。 ❌ SSTable 多了以后读放大严重。<br>B ✅ Bloom filter 快速排除不含 key 的 SSTable；index 快速定位 block offset。 ❌ Bloom filter 有 false positive；需要额外内存。<br>C ✅ 显著降低 SSD IO。 ❌ cache invalidation 和内存管理复杂；热点变动会导致命中率波动。 | MemTable -> Bloom filter -> SSTable index -> data block。<br>找到 data block offset 后，读取 block，在 block 内二分或顺序查找。<br>对热点 key 加 block cache 或 row cache。 |
+| 节点替换：ZK 健康检查 vs Controller 接管 | A: ZooKeeper 直接管理所有逻辑<br>B: ZK/etcd 做 membership，Controller 做决策<br>C: 手动替换 | A ✅ 看起来简单。 ❌ ZK 不适合做复杂 orchestration 和数据迁移；容易把 metadata store 用成控制系统。<br>B ✅ 职责清晰；ZK 负责 lease/health/metadata，controller 负责 replacement/rebalance。 ❌ 需要实现 controller 状态机和任务调度。<br>C ✅ 实现成本低。 ❌ 恢复慢，容易人为操作错误。 | ZK/etcd 只做健康检查、membership、partition map metadata。<br>Cluster Manager / Controller 负责选新节点、复制 snapshot、更新 ring version。<br>节点替换完成后再逐步把流量切过去。 |
+
 ## 关键组件
 
 - Client Router / Proxy

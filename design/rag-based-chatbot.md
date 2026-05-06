@@ -62,6 +62,19 @@ flowchart TD
     Parser --> Metadata[(Metadata / ACL DB)]
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| Chunking：固定长度 vs 结构化/语义切分 | A: 固定 token 长度切分<br>B: 按 heading/section 结构切分<br>C: Semantic chunking + overlap | A ✅ 实现简单，chunk 大小可控。 ❌ 可能切断表格、标题、步骤，导致 retrieval 上下文不完整。<br>B ✅ chunk 语义完整，citation 更清楚。 ❌ PDF/OCR/脏 HTML 解析难。<br>C ✅ 更符合语义边界；overlap 减少信息断裂。 ❌ 计算成本和实现复杂度更高。 | 先按结构切分，fallback 到 token chunking。<br>对长 section 做二级切分和少量 overlap。<br>chunk metadata 保留 title/path/page，方便 citation。 |
+| Retrieval：Vector vs BM25 vs Hybrid | A: 纯 vector search<br>B: BM25 / keyword search<br>C: Hybrid retrieval | A ✅ 能找到同义表达和语义相关内容。 ❌ 对精确 ID、错误码、函数名、专有名词不稳定。<br>B ✅ 可解释，精确匹配强。 ❌ 语义泛化弱。<br>C ✅ 兼顾语义和精确匹配。 ❌ score fusion、去重和 rerank 更复杂。 | 使用 vector + BM25 hybrid。<br>先取较大候选集，再 rerank。<br>query type detection：ID/代码类提高 BM25 权重，概念类提高 vector 权重。 |
+| Metadata / ACL Filtering | A: 检索后在应用层过滤 ACL<br>B: Vector DB metadata pre-filter<br>C: 按 tenant/permission group 分 collection/shard | A ✅ 实现简单。 ❌ 如果过滤后结果不足，需要二次检索；也有误暴露风险。<br>B ✅ 只在 allowed corpus 内 ANN search，安全边界更清楚。 ❌ allowed_ids 太多时 filter 成本高；索引分片复杂。<br>C ✅ 隔离强，filter 更简单。 ❌ collection 多，管理和资源利用复杂。 | tenant 级强隔离，tenant 内用 permission group/document ACL metadata filter。<br>allowed_ids 太多时不要传巨大列表，改用 permission group id / ACL version。<br>回答前 citation 再做一次权限校验。 |
+| Reranking 和 Context Assembly | A: 直接把 vector topK 塞进 prompt<br>B: Cross-encoder rerank<br>C: LLM rerank / answer-aware selection | A ✅ 低延迟，实现简单。 ❌ 容易混入不相关 chunk，浪费 context window。<br>B ✅ precision 明显提升。 ❌ 延迟和成本增加。<br>C ✅ 能更智能地选上下文。 ❌ 成本高，且可能引入不稳定。 | 常规 query 用 lightweight reranker。<br>高复杂度 query 用强 reranker。<br>Prompt context 按 relevance、diversity、source freshness 选择，不只看相似度。 |
+| Index Freshness：Streaming vs Batch Ingestion | A: 纯 batch reindex<br>B: Streaming ingestion<br>C: Streaming + batch reconciliation | A ✅ 实现简单，索引一致性好。 ❌ 新内容延迟高。<br>B ✅ 新文档/更新可分钟级进入索引。 ❌ partial failure、重复消息、旧版本清理更复杂。<br>C ✅ 实时性和最终正确性兼顾。 ❌ 需要维护 reindex job 和差异修复。 | 新增/更新文档走 streaming pipeline。<br>定期 batch reconciliation 检查 raw docs、metadata、vector index 是否一致。<br>Query 时用 active version filter，避免混用旧新版本。 |
+| Prompt Injection 和安全 | A: 完全信任 retrieved context<br>B: 把 context 当 untrusted data<br>C: Content sanitization + policy layer | A ✅ 简单。 ❌ 文档里可能包含 “忽略之前指令” 等 prompt injection。<br>B ✅ 系统指令明确模型不能执行文档中的指令。 ❌ 不能完全杜绝，需要模型和后处理配合。<br>C ✅ 可过滤明显恶意内容、敏感输出。 ❌ 误杀和漏检都存在。 | System prompt 明确 retrieved docs are untrusted.<br>Citation validation 和 output policy filter。<br>工具调用/写操作必须额外授权，不能由 retrieved content 触发。 |
+| Evaluation Metrics | A: 只看用户点赞<br>B: Retrieval metrics<br>C: End-to-end answer metrics | A ✅ 简单直接。 ❌ 稀疏、偏置大，无法定位 retrieval 还是 generation 问题。<br>B ✅ Recall@K、MRR、nDCG 能定位是否找到了正确上下文。 ❌ 需要标注数据或 golden set。<br>C ✅ Faithfulness、answer correctness、citation accuracy 更贴近用户体验。 ❌ 评估成本高，LLM-as-judge 有偏差。 | 同时看 retrieval 和 generation。<br>线上看 answer rate、citation click、thumbs up/down、fallback rate。<br>离线用 golden questions 做 regression test。 |
+| Latency 和 Cost Optimization | A: 每次都完整检索 + 强模型回答<br>B: 多级缓存<br>C: 模型路由 | A ✅ 质量高。 ❌ 延迟和成本高。<br>B ✅ 低延迟低成本。 ❌ 文档更新后 cache invalidation 要绑定 index version。<br>C ✅ 简单问题用小模型，复杂问题用大模型。 ❌ 需要 query classifier 和 fallback。 | Cache query rewrite/retrieval result by `query + tenant + ACL version + index version`。<br>Prompt/answer cache 只用于稳定知识和低风险问题。<br>设置 retrieval/rerank/LLM timeout，超时降级。 |
+
 ## 关键组件
 
 - Chat API

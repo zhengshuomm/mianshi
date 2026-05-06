@@ -64,6 +64,19 @@ flowchart TD
     Analytics --> Rec
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| 视频分发：源站直出 vs CDN vs 自建 Edge Cache | A: 源站/Object Store 直出<br>B: 第三方 CDN<br>C: 自建 Edge Cache / Open Connect 类方案 | A ✅ 实现简单，内容一致性好。 ❌ 延迟高，带宽成本高，源站容易被打爆。<br>B ✅ 上线快，覆盖广，弹性好。 ❌ 成本高；热门内容和 ISP peer 优化受限。<br>C ✅ 降低带宽成本，提升 ISP 侧播放质量，可预热热门内容。 ❌ 建设和运维成本高，需要容量预测和内容放置策略。 | 面试基础设计用 CDN；如果讨论 Netflix 规模，进一步讲自建 edge cache，按地区预热热门 titles 和前几个 segments。 |
+| 视频编码：单一版本 vs Adaptive Bitrate | A: 单一分辨率/码率<br>B: 多 bitrate ladder + HLS/DASH<br>C: per-title encoding | A ✅ 转码简单，存储成本低。 ❌ 弱网卡顿，高端设备画质差。<br>B ✅ 客户端可根据网络选择合适 segment，降低 buffering。 ❌ 转码成本和存储成本增加。<br>C ✅ 不同内容使用不同 bitrate ladder，动画/动作片分别优化。 ❌ 编码策略复杂，需要质量评估 pipeline。 | 用 HLS/DASH + adaptive bitrate；高阶讨论 per-title encoding 和 codec 选择，如 H.264 兼容性好，AV1 压缩率高但编码和设备支持成本更高。 |
+| Manifest 设计和授权 | A: 静态 public manifest<br>B: 动态 manifest<br>C: 静态 manifest + signed token/filter | A ✅ CDN 缓存友好，实现简单。 ❌ 无法按用户、地区、设备、订阅权限控制。<br>B ✅ 可根据 region、device codec、DRM、订阅等级返回不同版本。 ❌ 缓存命中率低，Playback Service 压力更大。<br>C ✅ manifest 可缓存，segment URL 通过短 TTL token 控权。 ❌ 权限变化和 token 过期处理更复杂。 | 使用动态生成或模板化 manifest，结合短 TTL signed URL 和 DRM license。热门 manifest 可以按 device/region 维度缓存。 |
+| Playback session：强校验 vs 缓存授权 | A: 每次播放都强查所有依赖<br>B: Entitlement cache<br>C: session token + 短 TTL | A ✅ 权限最新，逻辑直接。 ❌ 依赖多，延迟高；任一依赖故障会影响播放。<br>B ✅ 低延迟，依赖故障时可短时间继续播放。 ❌ 订阅取消、版权下架等变更有短暂不一致。<br>C ✅ 播放期间减少重复校验，token 过期后重新校验。 ❌ token 泄露和重放要防护。 | 创建 session 时强校验，播放过程中使用短 TTL session token + DRM license。高风险变更通过 token 失效列表或短 TTL 控制窗口。 |
+| 播放进度一致性：同步写 vs 异步事件 | A: 每个 heartbeat 同步写 DB<br>B: 客户端定期批量上报，服务端异步聚合<br>C: 关键事件同步 + heartbeat 异步 | A ✅ 进度最新。 ❌ 写压力巨大，影响播放链路。<br>B ✅ 降低写量，削峰填谷。 ❌ 进度可能滞后，客户端 crash 前最后几秒可能丢失。<br>C ✅ start/pause/stop/complete 更准确，普通 heartbeat 成本低。 ❌ 实现比单一路径复杂。 | 使用关键事件同步或准同步，heartbeat 异步聚合。Continue watching 允许几秒误差，不应影响播放质量。 |
+| 推荐系统与播放系统隔离 | A: 推荐和播放共享服务/数据库<br>B: 服务隔离，播放链路只依赖必要 metadata<br>C: 播放路径专用缓存和降级 | A ✅ 实现快，数据复用简单。 ❌ 推荐流量或训练数据问题可能拖垮播放。<br>B ✅ 推荐故障不影响播放；播放路径更短更稳定。 ❌ 需要同步 title availability 和 metadata 派生数据。<br>C ✅ Catalog/Entitlement 短暂故障时仍可播放已授权内容。 ❌ 缓存一致性和版权撤销更难。 | 播放系统和推荐系统强隔离。推荐可以失败降级，播放 session、manifest、DRM、CDN 是更高优先级。 |
+| QoE 监控和 CDN 调度 | A: 只监控服务端错误率<br>B: 客户端 QoE 事件<br>C: QoE 驱动 CDN steering | A ✅ 简单。 ❌ 看不到客户端卡顿和 ISP/CDN 问题。<br>B ✅ 真实反映播放体验。 ❌ 事件量大，有采样、延迟和丢失问题。<br>C ✅ 根据地区、ISP、设备动态选择更好的边缘节点。 ❌ 调度系统复杂，错误调度会放大事故。 | 收集客户端 QoE：startup time、rebuffering ratio、average bitrate、error code、CDN node。成熟阶段用 QoE 做 CDN steering 和内容预热。 |
+| 转码 pipeline：大任务调度和幂等 | A: 单 worker 顺序处理整个视频<br>B: 按 segment 并行处理<br>C: workflow engine 编排 | A ✅ 简单。 ❌ 慢，失败重试成本高。<br>B ✅ 并行度高，失败只重试单个 segment。 ❌ 任务编排、合并、质量检查复杂。<br>C ✅ 每步状态清晰，可重试、可恢复、可观测。 ❌ 引入 Temporal/Step Functions/Airflow 等组件复杂度。 | 用 workflow engine 编排：upload -> split -> transcode segments -> QC -> manifest -> publish。每个任务幂等，输出用 content_version 管理。 |
+
 ## 关键组件
 
 - API Gateway

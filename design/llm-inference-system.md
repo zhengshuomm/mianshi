@@ -69,6 +69,18 @@ flowchart TD
     RuntimeC --> Store
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| Batching：自己做 scheduler vs 使用 vLLM runtime 内置 scheduler | A: 系统层自研 token-level scheduler<br>B: 使用 vLLM/TGI/TensorRT-LLM 内置 continuous batching<br>C: 系统层做 admission/router，runtime 内做 token-level scheduling | A ✅ 可以完全控制 prefill/decode、priority、KV cache、fairness。 ❌ 工程复杂度极高。 容易重复造 vLLM/TensorRT-LLM 已经解决的问题。<br>B ✅ 快速获得 continuous batching、paged attention、KV cache 管理。 运维和实现成本低很多。 ❌ 对 runtime 内部策略可控性有限。 定制复杂优先级/隔离策略时可能受限。<br>C ✅ 分工清晰：Router 管跨实例，runtime 管单实例 batch。 易于扩展和替换 runtime。 ❌ 需要 runtime 暴露足够健康和负载指标。 | 当前题目约束下选方案 C。<br>Staff+ 表达：不要把 vLLM 内部 scheduler 画成自己要重新实现的服务；系统层重点是 routing、admission control、tenant isolation。 |
+| Prefill 和 Decode：一起调度 vs 分离部署 | A: prefill/decode 在同一个 runtime<br>B: prefill/decode 分离<br>C: 按请求类型分池 | A ✅ 架构简单。 KV cache 不需要跨节点传输。 ❌ 长 prompt prefill 会拖慢短请求 decode。 资源利用可能不均衡。<br>B ✅ 可以分别扩展 prefill 和 decode 资源。 长 prompt 不容易阻塞 decode。 ❌ KV cache transfer 复杂。 调度、网络、故障处理更难。<br>C ✅ 比完全分离简单。 能避免长请求影响短请求。 ❌ 资源池利用率可能下降。 | 先同 runtime。<br>规模上来后按长短上下文分池。<br>真正高规模再考虑 prefill/decode disaggregation。 |
+| KV Cache：只放 GPU vs CPU offload vs prefix cache | A: KV cache 全放 GPU<br>B: CPU offload / swap<br>C: prefix cache | A ✅ 访问最快，decode 延迟低。 ❌ 显存容易成为瓶颈。 长 context 会显著降低并发。<br>B ✅ 支持更长 context 或更多并发。 降低 GPU memory 压力。 ❌ PCIe/NVLink 传输增加延迟。 实现和调参复杂。<br>C ✅ 降低重复 prefill 成本。 改善 TTFT。 ❌ cache hit 依赖请求相似度。 cache invalidation 和 memory 管理复杂。 | 默认 GPU KV cache + paged attention。<br>对共享 prompt 开 prefix cache。<br>长上下文池再考虑 CPU offload。 |
+| 路由策略：least-loaded vs model-locality vs SLA-aware | A: least-loaded routing<br>B: model-locality / adapter-locality routing<br>C: SLA-aware routing | A ✅ 简单直观。 容易实现。 ❌ 不考虑 context length、KV cache、adapter、tenant priority。<br>B ✅ 避免频繁加载模型或 adapter。 降低冷启动和显存抖动。 ❌ 可能导致某些副本热点。<br>C ✅ 可以按优先级、deadline、预计 TTFT 做调度。 支持 reserved capacity。 ❌ 系统复杂，需要准确负载估计。 | 基础用 model-locality + load。<br>多租户场景加入 SLA-aware admission control。<br>关键是 Router 要理解 token cost，而不是只看 request count。 |
+| Admission Control：让请求排队 vs 快速拒绝 | A: 无限排队<br>B: bounded queue + timeout<br>C: priority queue + load shedding | A ✅ 请求不容易被拒绝。 ❌ TTFT 不可控。 用户等很久后超时，浪费资源。<br>B ✅ 控制尾延迟。 保护 GPU runtime。 ❌ 高峰期会拒绝部分请求。<br>C ✅ 高优先级请求有保障。 低优先级请求可降级或延后。 ❌ 公平性和实现复杂。 | 用 bounded queue + tenant priority。<br>admission control 基于 estimated tokens，而不是单纯 QPS。 |
+| Streaming Protocol：SSE vs WebSocket vs gRPC streaming | A: SSE<br>B: WebSocket<br>C: gRPC streaming | A ✅ 简单，浏览器和 HTTP infra 友好。 自动重连语义清晰。 ❌ 单向 server-to-client。 不适合复杂双向交互。<br>B ✅ 双向通信灵活。 ❌ 连接管理复杂，LB/proxy 支持要更小心。<br>C ✅ 类型化、性能好、适合 service-to-service。 ❌ 浏览器外部 API 不如 SSE 直接。 | 外部 API 用 SSE。<br>内部 Gateway 到 Runtime 用 gRPC streaming。<br>需要双向 agent session 时再引入 WebSocket。 |
+| 模型发布：直接替换 vs canary/rollback | A: 直接替换<br>B: canary rollout<br>C: shadow traffic | A ✅ 简单。 ❌ 回归影响全量用户。<br>B ✅ 小流量验证质量、延迟、错误率。 可快速 rollback。 ❌ 需要 Router 支持版本流量切分。<br>C ✅ 用户无感。 可以比较输出质量和性能。 ❌ 成本高，相当于多跑一份推理。 隐私和数据使用要合规。 | 用 registry + canary + rollback。<br>高风险模型可以先 shadow，再 canary。 |
+
 ## 关键组件
 
 ### API Gateway

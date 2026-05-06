@@ -64,6 +64,19 @@ flowchart TD
     SSE --> Client
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| 下单顺序：先写 DB vs 先提交 Exchange | A: 先提交外部 exchange，再写 DB<br>B: 先写 DB，再异步提交 exchange<br>C: DB + outbox transaction | A ✅ 路径看起来短。 ❌ 如果 submit 成功但 DB 写失败，本地失去订单追踪，风险极高。<br>B ✅ 任何订单先有本地记录，可审计、可恢复。 ❌ 用户看到 created 后，外部提交可能失败，需要状态机表达。<br>C ✅ 保证本地订单和提交任务一起持久化。 ❌ outbox relay、重复提交和幂等处理复杂。 | 先写 Order DB，再通过 transactional outbox 提交外部系统。<br>订单状态从 `created -> submitting -> submitted/rejected/submit_failed`。<br>不承诺创建成功等于交易所已接受。 |
+| 外部订单 ID：internal order_id vs client_order_id vs external_order_id | A: 只用 internal `order_id`<br>B: 使用 `external_order_id`<br>C: 使用 `client_order_id` | A ✅ 简单。 ❌ 外部 broker 无法用本地 ID 做幂等或对账。<br>B ✅ 对账和查询外部状态方便。 ❌ 提交前没有 external id；提交成功但 ack 丢失时本地可能不知道。<br>C ✅ 本地生成，提交前就存在；可以用于重试和 recovery。 ❌ 外部 venue 必须支持，且要保证全局唯一。 | 三个 ID 都保留：<br>`order_id`：内部 source of truth。<br>`client_order_id`：外部提交幂等和查找。<br>`external_order_id`：外部 ack 后对账。 |
+| 取消订单：本地取消 vs 外部取消 | A: 只改本地状态为 cancelled<br>B: 提交 cancel request 到 exchange<br>C: cancel pending 状态机 | A ✅ 快，简单。 ❌ 如果订单已到 exchange，本地取消不代表市场取消。<br>B ✅ 符合真实交易语义。 ❌ cancel request 和 fill 可能竞态；取消不一定成功。<br>C ✅ 准确表达 “取消请求已发出但未确认”。 ❌ 客户端体验更复杂，需要解释 pending。 | 未提交外部：`created -> cancelled`。<br>已提交外部：`submitted/partial_filled -> cancel_pending -> cancelled`。<br>如果 cancel 期间 fill 到达，fill 优先，剩余数量可能 cancelled。 |
+| 失败场景：DB 写失败、提交失败、提交后处理失败 | A: Failure to store order<br>B: Failure submit order to exchange<br>C: Failure processing after exchange submission | A ✅ 简单或适合特定约束 ❌ 需要额外处理边界和故障模式<br>B ✅ 简单或适合特定约束 ❌ 需要额外处理边界和故障模式<br>C ✅ 简单或适合特定约束 ❌ 需要额外处理边界和故障模式 | 交易系统里最重要的是区分 `failed` 和 `unknown`。<br>对未知状态不要盲目重试新订单；先用 `client_order_id` 查询外部状态。<br>Reconciliation worker 是必需组件，不是锦上添花。 |
+| 订单状态一致性：同步更新 vs Event-driven | A: Execution Gateway 直接写 Order DB<br>B: Execution Gateway 发标准化 order events<br>C: Event sourcing | A ✅ 路径短。 ❌ 外部接入逻辑和订单状态机耦合，难审计。<br>B ✅ Order Service 统一管理状态机；事件可 replay。 ❌ event bus 至少一次投递，需要幂等和乱序处理。<br>C ✅ 所有状态由事件重放得到，审计清晰。 ❌ 实现复杂，查询需要 projection。 | 使用 order_events 作为审计流水，Order DB 存当前状态 projection。<br>状态转移用 version/CAS。<br>外部事件按 `event_id` 去重，按 external sequence 或 timestamp 处理乱序。 |
+| Live Price Update：Redis Pub/Sub vs Kafka vs WebSocket/SSE | A: Redis Pub/Sub + SSE<br>B: Kafka market data stream<br>C: WebSocket | A ✅ 轻量、延迟低；SSE 适合 server-to-client 单向推送。 ❌ Redis Pub/Sub 不持久；SSE 断线期间会丢更新。<br>B ✅ 持久化、可 replay、消费者扩展性好。 ❌ 端到端延迟和 fanout 复杂度高于 Redis。<br>C ✅ 双向、低延迟。 ❌ 连接管理和扩展复杂。 | 行情内部可 Kafka 持久化，在线推送用 Redis Pub/Sub + SSE/WebSocket。<br>SSE server 可以订阅多个 symbol topic，但热点 symbol 要做 topic fanout 分层。<br>客户端重连时 GET latest price，不依赖 stream 补历史 tick。 |
+| Order Updates：Polling vs SSE | A: Client polling<br>B: SSE order stream<br>C: SSE + polling fallback | A ✅ 简单、可靠、断线无状态。 ❌ 状态变化有延迟，QPS 高。<br>B ✅ 用户体验好，server-to-client 简单。 ❌ 长连接需要资源；推送失败不能代表订单失败。<br>C ✅ 实时体验和可靠补齐兼顾。 ❌ 客户端要处理去重和状态 merge。 | Order updates 用 SSE 推送，同时保留 `GET /orders/{id}`。<br>SSE 只传状态变化通知，Order DB 是最终状态。<br>客户端断线重连后用 cursor/last_seen_event_id 补齐或直接拉订单详情。 |
+| Portfolio / Buying Power：强同步扣减 vs Ledger | A: 只存当前 balance/position<br>B: ledger + projection<br>C: 同步强一致 portfolio update | A ✅ 查询简单。 ❌ 审计困难，故障后很难解释余额变化。<br>B ✅ 每笔 hold、release、fill、fee 都可追溯。 ❌ 读当前余额需要 projection，设计更复杂。<br>C ✅ 防止超额购买。 ❌ 会增加下单延迟和锁竞争。 | 下单前同步 reserve buying power。<br>fill 后通过 ledger entry 更新实际 cash/position。<br>Projection 可缓存，但 ledger 是 source of truth。 |
+
 ## 关键组件
 
 - Order Service

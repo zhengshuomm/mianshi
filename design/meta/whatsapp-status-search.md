@@ -64,6 +64,18 @@ flowchart TD
     Expirer --> SearchIndex
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| Status feed：fanout-on-write vs fanout-on-read vs hybrid | A: fanout-on-write<br>B: fanout-on-read<br>C: hybrid fanout | A ✅ 读 feed 很快，直接读 user inbox；排序和未读状态简单。 ❌ 写放大，发布瞬间要写很多 viewer inbox；大联系人用户容易造成热点。<br>B ✅ 发布成本低，不会因为一个作者写爆 inbox。 ❌ 读 feed 需要查联系人列表和多作者 status，延迟高，容易 scatter-gather。<br>C ✅ 普通用户读快，大联系人用户避免写放大。 ❌ 实现复杂，需要区分作者类型，并在读路径 merge 两类候选。 | 选择 hybrid。普通用户 fanout-on-write，大联系人用户 fanout-on-read，并用 cache 缓存大联系人用户最近 active status。 |
+| Search status：服务端索引 vs per-user 可见索引 vs client-side search | A: 全局服务端搜索索引<br>B: 按 viewer 构建可见索引<br>C: client-side local search | A ✅ 搜索能力强，支持全文、prefix、ranking、拼写纠错。 ❌ 权限过滤复杂；索引延迟或删除延迟可能造成隐私风险。<br>B ✅ 搜索天然只返回用户可见内容，读路径简单。 ❌ 写放大巨大，一个 status 要写入多个 viewer 的搜索索引。<br>C ✅ 隐私最好，服务端只提供同步和权限过滤后的密文内容。 ❌ 跨设备同步复杂；只能搜索本地已下载或已同步的 status；新设备 recall 差。 | 如果面试强调 WhatsApp 隐私，推荐：服务端只搜索联系人、时间、未读等 metadata；caption/text 搜索放在客户端本地索引。若题目允许服务端明文，则用全局索引 + read-time permission check。 |
+| 权限一致性：发布时快照 vs 读取时动态计算 | A: 发布时快照 viewer list<br>B: 读取时动态计算权限<br>C: 快照 + deny list 动态覆盖 | A ✅ fanout 和搜索索引稳定，读路径简单。 ❌ 用户 block 某人后，历史 status 是否还能看会变得不符合直觉。<br>B ✅ 隐私更安全，权限变更实时生效。 ❌ 读路径依赖 Privacy Service，延迟和可用性压力更大。<br>C ✅ 大多数权限走快照，block/delete 这种强隐私事件动态覆盖。 ❌ 语义更复杂，需要清晰定义优先级。 | 使用快照 + 动态 deny 覆盖：发布时确定候选 viewer，读取和搜索返回前始终检查 block list、status state、expires_at。 |
+| 24 小时过期：DB TTL vs 延迟队列 vs 时间桶扫描 | A: DB TTL<br>B: 延迟队列<br>C: 时间桶扫描 | A ✅ 实现简单，自动清理，成本低。 ❌ TTL 删除不精确；不能作为“到点不可见”的唯一机制。<br>B ✅ 到期处理及时，可以触发 index/cache/CDN 清理。 ❌ 队列规模巨大，重试和 worker failure 要处理。<br>C ✅ 稳定、可恢复、容易 backfill。 ❌ 分钟级延迟；扫描任务需要避免热点桶。 | 读路径强制判断 `expires_at`，清理路径用 TTL + 时间桶扫描。需要更快清理时，再加延迟队列作为优化。 |
+| View receipt：同步写 vs 异步写 | A: 同步写 DB<br>B: 写 Kafka 异步聚合<br>C: 客户端批量上报 | A ✅ 数据立即可见，逻辑简单。 ❌ 观看路径延迟高，热点 status 可能把 DB 打爆。<br>B ✅ 观看路径快，削峰填谷，可批量写入 receipt store。 ❌ 作者看到 view list 有延迟；需要幂等和去重。<br>C ✅ 减少网络请求，提高电池效率。 ❌ 客户端 crash 可能丢事件；需要本地队列和重试。 | Client batch + Event Stream + 异步聚合。View receipt 是最终一致，不应该影响 status 打开延迟。 |
+| Search index freshness 和一致性 | A: 同步写搜索索引<br>B: Kafka 异步索引<br>C: 异步索引 + read-time fallback | A ✅ 发布后立刻可搜。 ❌ 搜索索引故障会影响发布主链路。<br>B ✅ 解耦主链路；索引可重放、可重建。 ❌ 短暂不可搜索；需要处理乱序和重复事件。<br>C ✅ 新 status 未进索引时，可从 inbox/metadata 补查最近内容。 ❌ Search Service 更复杂。 | 异步索引 + 返回前强校验。Freshness 用最近 inbox fallback 提升，correctness 由 read-time check 保证。 |
+| 多 Region：home region vs global active-active | A: 按用户 home region 存储<br>B: 跨 region 复制 metadata<br>C: active-active 多主 | A ✅ 数据边界清晰，写入简单。 ❌ 跨 region 联系人查看可能有额外延迟。<br>B ✅ 跨区域查看更快。 ❌ 复制延迟、删除/过期传播、隐私变更一致性更难。<br>C ✅ 区域故障影响小。 ❌ 冲突处理、权限撤销、搜索索引一致性复杂度最高。 | Status 这种 24 小时短生命周期内容，优先 home region + CDN media + 必要 metadata 异步复制。隐私撤销和过期在读路径强校验。 |
+
 ## 关键组件
 
 - Status Service

@@ -65,6 +65,19 @@ flowchart TD
     Reminder --> DelayQ[Delay Queue / Timer Store]
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| Source of Truth：Event-Centric vs User-Centric | A: 只存 event-centric record<br>B: 每个用户存一份 calendar view<br>C: Hybrid | A ✅ 数据模型简单，一份 event source of truth。 ❌ 读用户日历时需要 join attendees 和 events，延迟高。<br>B ✅ 用户打开日/周视图很快。 ❌ 写事件时要 fanout 更新多个用户 view，存在最终一致。<br>C ✅ Event DB 保持正确性，User View 提供低延迟读取。 ❌ 需要 outbox、materializer、rebuild 机制。 | Event DB + Attendee DB 是 source of truth。<br>User Calendar View 是 derived read model。<br>读路径快，修复路径清晰。 |
+| 并发更新：Last Write Wins vs Optimistic Lock | A: Last Write Wins<br>B: Optimistic Lock with version<br>C: 字段级 merge | A ✅ 实现简单。 ❌ 两个客户端同时改 event，后写会覆盖先写，用户难以理解。<br>B ✅ 避免 lost update；无锁等待。 ❌ 冲突时客户端需要重新拉取并 merge。<br>C ✅ 减少冲突，例如一个人改 title，另一个人改 reminder。 ❌ merge 规则复杂，部分字段不能安全 merge。 | Event master 用 `expected_version` optimistic lock。<br>RSVP 状态拆成 attendee row，避免 organizer 更新 event 时覆盖 RSVP。<br>冲突返回 409，让客户端刷新后重试。 |
+| Recurring Event：预展开 vs 按需展开 | A: 预生成所有 future occurrences<br>B: 按查询窗口动态展开<br>C: 滚动窗口 materialization | A ✅ 查询快，实现直观。 ❌ 无限重复无法预生成；修改规则时需要大量更新。<br>B ✅ 存储少；修改 rule 简单。 ❌ 每次查询都要计算，复杂 recurrence 可能慢。<br>C ✅ 未来几个月查询快；远期按需展开。 ❌ 需要后台 job 持续补窗口和处理 exceptions。 | 存 `RRULE + exceptions` 作为 source of truth。<br>对未来 3-12 个月生成 user view。<br>远期查询按需展开并写回 cache/view。 |
+| Free/Busy 查询：实时扫描 vs Busy Index | A: 实时扫描 calendar events<br>B: 维护 busy index<br>C: cache popular free/busy windows | A ✅ 结果最新，不需要额外索引。 ❌ 多人 meeting availability 查询会很慢。<br>B ✅ 查询快，适合批量用户。 ❌ event update 后 busy index 有延迟，需处理 stale。<br>C ✅ 降低 DB 压力。 ❌ cache invalidation 复杂，不能作为权限最终判断。 | Free/Busy 用 derived busy index。<br>返回前根据 ACL 做过滤：private event 只显示 busy。<br>对刚更新的 event，可读 source of truth 做短期兜底。 |
+| Reminder 调度：DB Polling vs Delay Queue vs Timer Wheel | A: DB polling<br>B: Delay queue<br>C: Hybrid timer table + short delay queue | A ✅ durable，容易重建。 ❌ poll interval 影响准确性，扫描压力要控制。<br>B ✅ 到点投递，调度逻辑简单。 ❌ 长时间 future reminders、取消修改较难管理。<br>C ✅ timer table 存长期提醒，短期进入 delay queue 精准触发。 ❌ 两层状态，需要去重和版本校验。 | Reminder source of truth 存 timer table。<br>Scheduler 提前扫描未来 N 分钟，把任务放入 delay queue。<br>发送前校验 event version/status，防止取消后仍提醒。 |
+| 邀请 Fanout：同步写所有人 vs 异步 Materialization | A: 同步写所有 attendee view<br>B: 异步 fanout<br>C: 按需补齐 | A ✅ 创建后所有人立即可见。 ❌ 大会议邀请会拖慢创建请求，甚至超时。<br>B ✅ 创建 event 快；fanout worker 可水平扩展。 ❌ attendee view 最终一致，短时间内可能未显示。<br>C ✅ 不为不活跃用户浪费写入。 ❌ 用户打开日历时首次加载可能变慢。 | Event 创建同步写 source of truth 和 outbox。<br>Attendee view 异步 materialize。<br>用户查询时如果 view lag，按需从 source of truth 补齐。 |
+| Privacy / Security：详情权限 vs Busy 权限 | A: 缓存里存完整 event 并直接返回<br>B: 读时做 final ACL check<br>C: 不同视图存不同 visibility snapshot | A ✅ 读路径简单。 ❌ 权限变化后容易泄露 private event 详情。<br>B ✅ 权限变更能立即生效；安全边界清晰。 ❌ 读路径增加 policy check。<br>C ✅ 读路径快。 ❌ 权限变更时要重建视图。 | Cache/View 只是候选结果。<br>返回前必须做 final ACL/visibility check。<br>Private event 对非授权用户只暴露 busy time，不暴露 title/location/attendees。 |
+| Offline Sync：全量拉取 vs 增量 sync token | A: 每次全量拉取时间窗口<br>B: 增量 sync token<br>C: Push notification + incremental sync | A ✅ 实现简单。 ❌ 移动端流量和延迟差，无法高效跨设备同步。<br>B ✅ 只拉变更，低流量，适合离线恢复。 ❌ 需要维护 change log 和 token 过期策略。<br>C ✅ 体验好，延迟低。 ❌ push 丢失时仍需要 sync token 兜底。 | 提供 `sync_token` API。<br>Change log 保留一段时间，token 太旧则要求客户端重建窗口。<br>Push 只是提示客户端 sync，不承载完整正确性。 |
+
 ## 关键组件
 
 - Event Service

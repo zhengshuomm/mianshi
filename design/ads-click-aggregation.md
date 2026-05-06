@@ -55,6 +55,19 @@ flowchart TD
     QueryAPI --> OfflineDB
 ```
 
+## 重要讨论点
+
+| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
+|---|---|---|---|
+| Server-side Redirect vs Client-side Tracking | A: Client-side tracking pixel / JS 上报<br>B: Server-side redirect | A ✅ 实现简单，对用户跳转路径影响小。 ❌ 用户或浏览器可以绕过；ad blocker 容易拦截；不能保证 click 一定被记录。<br>B ✅ 用户必须先经过 tracking endpoint，才能跳到 advertiser URL。 ❌ 增加一次网络跳转；Click API 延迟会影响用户体验。 | click billing 用 server-side redirect。<br>impression 可以用 client-side pixel + server log 结合。<br>Click API 只做轻量逻辑，避免 redirect 路径变慢。 |
+| 去重：Redis SETNX vs DB Unique Key vs Stream Dedup | A: Redis `SETNX impression_id`<br>B: DB unique constraint<br>C: Streaming dedup | A ✅ 快；实现简单；TTL 自然清理。 ❌ Redis 丢数据或 failover 可能导致少量重复；不是长期审计来源。<br>B ✅ 正确性强。 ❌ 写入延迟高；高 QPS 下容易成为瓶颈。<br>C ✅ 点击路径最快；保留全部 raw signal。 ❌ 实时 dashboard 可能短暂显示重复，需要后续修正。 | click path 用 Redis `SETNX` 做快速 billable dedup。<br>raw event 仍然保留所有点击。<br>offline reconciliation 再用 `impression_id` 做最终去重。 |
+| Cassandra vs Druid vs ClickHouse | A: Cassandra<br>B: Druid<br>C: ClickHouse | A ✅ 写入吞吐高；按 partition key range query 很稳；1 万条级别 range result 可以接受。 ❌ 不适合任意维度 group by；新增查询维度通常要新表或预聚合。<br>B ✅ 天然按时间分区；支持 roll-up；能同时 query real-time segments 和 batch segments。 ❌ 不适合非常高 QPS 的点查服务；数据修正、segment version、compaction 要理解清楚。<br>C ✅ 查询能力强；压缩和列式扫描效率高。 ❌ 实时 upsert / 去重语义需要小心；运维和 schema 设计要求高。 | 固定 dashboard + 简单 range query：Cassandra 可以。<br>多维广告分析：Druid / ClickHouse 更合适。<br>面试里可以说：Cassandra 是 serving KV/range store，不是 ad-hoc aggregation engine。 |
+| 实时数据和离线数据如何合并 | A: 一个 DB 存所有数据<br>B: Online DB 存实时，Offline DB 存历史<br>C: Druid real-time + batch segments | A ✅ 架构简单，没有 merge 问题。 ❌ 实时写、历史分析、replay、修正都压在一个系统上。<br>B ✅ 实时路径快；离线结果更准确；历史数据成本低。 ❌ Query API 需要合并 recent + historical；边界时间容易重复或漏算。<br>C ✅ Druid query engine 可以同时查 real-time data 和 historical segments。 ❌ 实时 segment 和 batch segment 时间区间重叠时，要靠 version / overshadow 处理冲突。 | 最近当天用实时结果，1 天前用 batch corrected result。<br>reconciliation 完成后，用 batch result 替换对应 interval 的 real-time result。<br>Druid 里通过 segment interval + version 让新 batch segment overshadow 老 segment。 |
+| Exactly-once：能做到什么，不能承诺什么 | A: At-least-once + 幂等 sink<br>B: Kafka transactional producer<br>C: Flink checkpoint + transactional / idempotent sink | A ✅ 简单可靠；失败后 replay 不丢数据。 ❌ sink 不幂等就会重复计数。<br>B ✅ 支持 transaction abort rollback；减少 Kafka 内部重复。 ❌ 只能解决 Kafka 内部事务，不自动解决外部 DB 写入 exactly-once。<br>C ✅ checkpoint 可以保存 offset 和 state；恢复时从一致位置继续。 ❌ 外部 sink 必须支持 2PC、事务、幂等 key 或 overwrite。 | 面试里不要轻易说端到端 exactly-once。<br>更好的说法是：Kafka/Flink 内部可做到 exactly-once processing，但外部效果依赖幂等写入或事务 sink。<br>对 Druid 可以用 deterministic sequence / window key / Kafka offset tracking 降低重复 ingestion。 |
+| Delayed Event / Late Arrival | A: 严格按 event time window 关闭<br>B: Watermark + allowed lateness<br>C: 离线 reconciliation 修正 | A ✅ 结果产出快。 ❌ 迟到事件会被丢弃或进入 correction path。<br>B ✅ 能吸收常见网络延迟和客户端延迟。 ❌ dashboard 会有一段时间不断修正。<br>C ✅ 准确性最高；可以处理长延迟和 replay。 ❌ 不是实时结果。 | 实时层用 watermark + allowed lateness。<br>超过 lateness 的事件进入 correction topic。<br>billing 以 offline reconciliation 为准。 |
+| Druid Roll-up 和 Reindex/Compaction | A: Kafka indexing task 实时 ingestion<br>B: Batch ingestion<br>C: Compaction + version overwrite | A ✅ 从 Kafka 消费，生成 real-time segments，能快速查询。 ❌ 实时 segment 小且多，需要后续 compaction。<br>B ✅ 数据更完整，segment 更规整。 ❌ 有延迟，不能替代实时 dashboard。<br>C ✅ 把小 segment 合并，降低 query overhead；新版本 segment 可以覆盖旧版本。 ❌ 要管理 interval、version、roll-up 粒度，避免重复计数。 | Druid roll-up key 可以是 `ad_id + campaign_id + time_bucket + dimension set`。<br>实时 ingestion 服务当天 dashboard。<br>batch ingestion 生成更高质量 segment，完成后 overshadow 对应实时 segment。 |
+| 查询服务：实时高 QPS vs 分析型查询 | A: 直接查 Druid / ClickHouse<br>B: 预聚合结果存 Online DB<br>C: Cache + OLAP fallback | A ✅ 灵活，维度丰富。 ❌ 高 QPS 下成本高，容易影响集群稳定性。<br>B ✅ 低延迟，高 QPS 友好。 ❌ 查询维度固定，灵活性差。<br>C ✅ 保护 OLAP engine，降低延迟。 ❌ cache invalidation 和 freshness 需要控制。 | 固定报表读预聚合 store。<br>ad-hoc 分析查 Druid / ClickHouse。<br>热门 query 加 cache，避免 OLAP 被 dashboard 打爆。 |
+
 ## 关键组件
 
 - Click Redirect API
