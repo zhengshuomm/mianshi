@@ -52,16 +52,16 @@ flowchart TD
 
 ## 重要讨论点
 
-| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
-|---|---|---|---|
-| Global Top10：Redis ZSET vs DB GSI | A: Redis ZSET 全量存所有玩家<br>B: DynamoDB GSI 按 score 排序<br>C: 只维护 top candidates | A ✅ top10、rank 查询非常快。 ❌ 玩家量巨大时内存贵；Redis 故障要重建。<br>B ✅ 持久化，少一套 serving cache。 ❌ 高频 score update 写放大；global score index 可能热点；rank 查询不方便。<br>C ✅ 内存省，只存前 N 万或达到阈值的玩家。 ❌ 普通玩家 rank 只能近似；阈值附近要小心漏掉。 | Source of truth 放 Score DB。<br>Global top10 用 Redis ZSET。<br>如果规模很大，只把高分玩家放 ZSET，普通玩家用 percentile。 |
-| Friends Top10：预计算 vs 查询时计算 | A: 为每个用户预计算 friends leaderboard<br>B: 查询时拉好友分数并排序<br>C: 活跃用户预计算 + 普通用户实时计算 | A ✅ 读非常快。 ❌ 写放大巨大；一个玩家分数更新要影响所有朋友的榜。<br>B ✅ 写路径轻，简单可靠。 ❌ 好友很多时读会慢。<br>C ✅ 成本和延迟平衡。 ❌ 系统复杂。 | 默认 request-time 计算 friends top10。<br>好友数少于几千时批量查分排序即可。<br>活跃用户或大好友用户使用缓存/预计算。 |
-| 按 Score Shard vs 按 User Shard | A: 按 score range shard<br>B: 按 user_id shard<br>C: user shard + 每 shard topN 上报 | A ✅ top score 查询直观。 ❌ 玩家分数频繁变化，需要跨 shard 移动；高分 shard 热点明显。<br>B ✅ 写入均匀，用户查分简单。 ❌ global top10 要跨 shard 聚合。<br>C ✅ 写均匀，同时支持全局 topN。 ❌ 需要定期/实时 merge shard topN。 | Score DB 按 user_id/game_id 分片。<br>每个 shard 维护 local topN。<br>GlobalWorker merge local topN 到 global top10。 |
-| 是否存 Rank | A: 每次写分数都更新所有 rank<br>B: 读时实时算 rank<br>C: 离线 batch 存 rank/percentile | A ✅ 读 rank 快。 ❌ 不可行；一个分数变化可能影响大量玩家。<br>B ✅ 写路径简单。 ❌ 全量 rank 查询成本高，除非 Redis ZSET 存全量。<br>C ✅ 适合展示 percentile、赛季结算。 ❌ 不是实时。 | Top10 不需要存 rank，按 ZSET 顺序返回。<br>用户 rank 如果 Redis 全量可 `ZREVRANK`。<br>大规模下 rank 离线算，线上显示 percentile 或 approximate rank。 |
-| Score Update 语义 | A: 最新分数覆盖<br>B: 历史最高分<br>C: 赛季/时间窗口分数 | A ✅ 简单。 ❌ 不适合大多数游戏排行榜。<br>B ✅ 符合 leaderboard 直觉。 ❌ 需要 conditional update：新分数必须大于旧分数。<br>C ✅ 支持每日榜、赛季榜。 ❌ 需要按 season/window 维护多套榜。 | 默认 best_score。<br>key 中加入 `season_id` 支持赛季榜。<br>Score DB conditional update 防低分覆盖高分。 |
-| Redis Scale | A: 单 Redis ZSET 存全局榜<br>B: Redis Cluster 分片<br>C: Local topN + global merge | A ✅ 简单。 ❌ 内存和写 QPS 有上限。<br>B ✅ 容量更大。 ❌ 全局 top10 需要跨 shard merge，不能直接一个 ZSET 解决。<br>C ✅ 适合超大规模。 ❌ global top10 有轻微延迟。 | 中小规模单 ZSET。<br>大规模按 shard 存 local topN，merge 成 global top10 ZSET。<br>Redis serving view 可由 DB/event stream 重建。 |
-| 反作弊和可信分数 | A: 客户端直接提交分数<br>B: 服务端校验<br>C: 异步风控 | A ✅ 简单。 ❌ 极易作弊。<br>B ✅ 更可信。 ❌ 游戏类型不同，校验复杂。<br>C ✅ 不阻塞写路径。 ❌ 可疑高分可能短暂上榜。 | 基础校验同步做：分数范围、时间、关卡、签名。<br>可疑分数先 pending，不进 global top10。<br>异步风控确认后再 publish。 |
-| Fault Tolerance | A: 只写 Redis<br>B: 先写 DB，再异步更新 Redis<br>C: 写 event log，再 worker 更新 DB/Redis | A ✅ 快。 ❌ Redis 丢失后排行榜不可恢复。<br>B ✅ DB 是 source of truth，可恢复。 ❌ Redis leaderboard 有短暂延迟。<br>C ✅ 可 replay。 ❌ 用户提交后看到结果有延迟。 | Score Service 同步写 Score DB。<br>发布 score update event。<br>Worker 更新 Redis ZSET。<br>Redis 异常时从 Score DB/local topN 重建。 |
+| 深挖点 | 方案 A | 方案 B | 方案 C | 推荐表达 |
+| --- | --- | --- | --- | --- |
+| Global Top10：Redis ZSET vs DB GSI | Redis ZSET 全量存所有玩家<br>✅ top10、rank 查询非常快<br>❌ 玩家量巨大时内存贵 | DynamoDB GSI 按 score 排序<br>✅ 持久化，少一套 serving cache<br>❌ 高频 score update 写放大 | 只维护 top candidates<br>✅ 内存省，只存前 N 万或达到阈值的玩家<br>❌ 普通玩家 rank 只能近似 | Source of truth 放 Score DB。<br>Global top10 用 Redis ZSET。 |
+| Friends Top10：预计算 vs 查询时计算 | 为每个用户预计算 friends leaderboard<br>✅ 读非常快<br>❌ 写放大巨大 | 查询时拉好友分数并排序<br>✅ 写路径轻，简单可靠<br>❌ 好友很多时读会慢 | 活跃用户预计算 + 普通用户实时计算<br>✅ 成本和延迟平衡<br>❌ 系统复杂 | 默认 request-time 计算 friends top10。<br>好友数少于几千时批量查分排序即可。 |
+| 按 Score Shard vs 按 User Shard | 按 score range shard<br>✅ top score 查询直观<br>❌ 玩家分数频繁变化，需要跨 shard 移动 | 按 user_id shard<br>✅ 写入均匀，用户查分简单<br>❌ global top10 要跨 shard 聚合 | user shard + 每 shard topN 上报<br>✅ 写均匀，同时支持全局 topN<br>❌ 需要定期/实时 merge shard topN | Score DB 按 user_id/game_id 分片。<br>每个 shard 维护 local topN。 |
+| 是否存 Rank | 每次写分数都更新所有 rank<br>✅ 读 rank 快<br>❌ 不可行 | 读时实时算 rank<br>✅ 写路径简单<br>❌ 全量 rank 查询成本高，除非 Redis ZSET 存全量 | 离线 batch 存 rank/percentile<br>✅ 适合展示 percentile、赛季结算<br>❌ 不是实时 | Top10 不需要存 rank，按 ZSET 顺序返回。<br>用户 rank 如果 Redis 全量可 `ZREVRANK`。 |
+| Score Update 语义 | 最新分数覆盖<br>✅ 简单<br>❌ 不适合大多数游戏排行榜 | 历史最高分<br>✅ 符合 leaderboard 直觉<br>❌ 需要 conditional update：新分数必须大于旧分数 | 赛季/时间窗口分数<br>✅ 支持每日榜、赛季榜<br>❌ 需要按 season/window 维护多套榜 | 默认 best_score。<br>key 中加入 `season_id` 支持赛季榜。 |
+| Redis Scale | 单 Redis ZSET 存全局榜<br>✅ 简单<br>❌ 内存和写 QPS 有上限 | Redis Cluster 分片<br>✅ 容量更大<br>❌ 全局 top10 需要跨 shard merge，不能直接一个 ZSET 解决 | Local topN + global merge<br>✅ 适合超大规模<br>❌ global top10 有轻微延迟 | 中小规模单 ZSET。<br>大规模按 shard 存 local topN，merge 成 global top10 ZSET。 |
+| 反作弊和可信分数 | 客户端直接提交分数<br>✅ 简单<br>❌ 极易作弊 | 服务端校验<br>✅ 更可信<br>❌ 游戏类型不同，校验复杂 | 异步风控<br>✅ 不阻塞写路径<br>❌ 可疑高分可能短暂上榜 | 基础校验同步做：分数范围、时间、关卡、签名。<br>可疑分数先 pending，不进 global top10。 |
+| Fault Tolerance | 只写 Redis<br>✅ 快<br>❌ Redis 丢失后排行榜不可恢复 | 先写 DB，再异步更新 Redis<br>✅ DB 是 source of truth，可恢复<br>❌ Redis leaderboard 有短暂延迟 | 写 event log，再 worker 更新 DB/Redis<br>✅ 可 replay<br>❌ 用户提交后看到结果有延迟 | Score Service 同步写 Score DB。<br>发布 score update event。 |
 
 ## 关键组件
 

@@ -63,16 +63,16 @@ flowchart TD
 
 ## 重要讨论点
 
-| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
-|---|---|---|---|
-| 召回策略：Geo-first vs Personalized-first | A: Geo-first<br>B: Personalized-first<br>C: Hybrid multi-recall | A ✅ 候选一定可服务，召回规模小，延迟低。 ❌ 个性化弱，可能错过用户喜欢但稍远的餐馆。<br>B ✅ 个性化强，能推荐用户真正喜欢的类别。 ❌ 容易召回不可配送/太远/已关店的餐馆，浪费排序资源。<br>C ✅ Geo、个性化、热门、新店、促销各自有 quota，覆盖更全面。 ❌ 候选去重、quota 调参和召回归因更复杂。 | 外卖场景使用 Geo-first + multi-recall。先做硬过滤，再按个性化、热门、探索等通道召回。 |
-| 排序目标：CTR vs CVR vs Long-term Satisfaction | A: 优化 CTR<br>B: 优化 CVR/Order<br>C: 多目标排序 | A ✅ 样本多，反馈快，模型容易训练。 ❌ 容易标题党/图片党，和业务收入及满意度不完全一致。<br>B ✅ 更接近业务收益。 ❌ 订单样本少，反馈慢；可能过度推荐老店和高转化店。<br>C ✅ 同时考虑点击、下单、复购、取消率、等待时间、差评风险。 ❌ 目标权重和校准复杂。 | 使用多目标排序，例如：<br>w4 * P(cancel/late_delivery/bad_rating) |
-| 实时可用性：强过滤 vs 排序特征 | A: 把可用性当 hard filter<br>B: 把可用性当 ranking feature<br>C: hard filter + soft penalty | A ✅ 不会推荐用户无法下单的餐馆。 ❌ 如果状态延迟或误报，会直接损失曝光。<br>B ✅ 排序更平滑，不会因为短期波动完全消失。 ❌ 如果特征过期，用户体验会变差。<br>C ✅ 不可服务的过滤掉，可服务但体验差的降权。 ❌ 需要清晰定义哪些是硬约束、哪些是软约束。 | 不营业/不可配送/违规下架是 hard filter；等待时间、爆单、价格、取消率作为 soft ranking features。 |
-| 地理索引：PostGIS vs Geohash/H3/S2 vs Redis GEO | A: PostGIS<br>B: Geohash/H3/S2<br>C: Redis GEO | A ✅ 地理能力强，支持复杂空间查询。 ❌ 高 QPS 在线推荐压力大，需要 cache/read replica。<br>B ✅ 易分片，可预计算 cell -> restaurants，查询快。 ❌ 边界问题，需要查邻居 cell；精度和 cell size 要调。<br>C ✅ 实现简单，速度快。 ❌ 本质是 sorted set，复杂 polygon 和频繁大规模更新会吃力；sharding 需要按 city/cell 管理。 | 在线推荐使用 H3/S2 cell index；复杂配送范围和运营查询用 PostGIS 做 source/校验；Redis GEO 可作为局部低延迟缓存。 |
-| 冷启动：新用户 vs 新餐馆 | A: 热门兜底<br>B: 内容/属性召回<br>C: 受控探索 | A ✅ 稳定，转化不差。 ❌ 个性化弱，头部效应更严重。<br>B ✅ 可根据 cuisine、价格、位置、图片、菜单做匹配。 ❌ 内容质量不稳定，无法完全代表真实体验。<br>C ✅ 可以收集反馈，避免系统只推老餐馆。 ❌ 探索过多会降低短期转化。 | 新用户用位置 + 时间 + 热门 + 显式偏好；新餐馆进入 exploration pool，设置小流量 quota 和质量 guardrail。 |
-| 探索利用：只推最高分 vs Bandit | A: 纯 exploitation<br>B: 固定比例探索<br>C: Contextual bandit | A ✅ 指标稳定，用户体验可控。 ❌ 反馈闭环偏置严重，长尾无法学习。<br>B ✅ 实现简单，容易解释。 ❌ 探索效率低，可能浪费流量。<br>C ✅ 根据不确定性和上下文分配探索流量。 ❌ 实现和评估复杂，需要严格 guardrail。 | 面试可以说先用固定 exploration slot，再演进到 contextual bandit；所有探索都受质量、距离、营业状态约束。 |
-| 训练数据偏差：position bias 和 selection bias | A: 直接用点击/订单训练<br>B: 加入 position feature<br>C: 随机探索 + debias 方法 | A ✅ 简单，数据量大。 ❌ 模型会强化现有排序偏差。<br>B ✅ 能部分校正位置影响。 ❌ 不能完全消除曝光选择偏差。<br>C ✅ 可以估计 propensity，做 IPS/DR 等反事实评估。 ❌ 需要牺牲少量流量做探索，分析复杂。 | 记录完整 impression 和 position，保留 exploration traffic，用 debias/off-policy evaluation 支持模型迭代。 |
-| 缓存和一致性：推荐结果缓存 vs 实时重排 | A: 缓存完整推荐列表<br>B: 完全实时计算<br>C: 缓存候选 + 实时 rerank | A ✅ 延迟低，成本低。 ❌ 个性化弱，状态容易过期。<br>B ✅ 最新、最个性化。 ❌ 成本高，峰值压力大。<br>C ✅ 召回成本低，最终排序仍能利用实时特征。 ❌ 工程复杂，需要候选 cache 失效和版本管理。 | 缓存 city/cell 级候选池和热门池，在线做实时过滤与个性化 rerank；最终返回前检查 availability。 |
+| 深挖点 | 方案 A | 方案 B | 方案 C | 推荐表达 |
+| --- | --- | --- | --- | --- |
+| 召回策略：Geo-first vs Personalized-first | Geo-first<br>✅ 候选一定可服务，召回规模小，延迟低<br>❌ 个性化弱，可能错过用户喜欢但稍远的餐馆 | Personalized-first<br>✅ 个性化强，能推荐用户真正喜欢的类别<br>❌ 容易召回不可配送/太远/已关店的餐馆，浪费排序资源 | Hybrid multi-recall<br>✅ Geo、个性化、热门、新店、促销各自有 quota，覆盖更全面<br>❌ 候选去重、quota 调参和召回归因更复杂 | 外卖场景使用 Geo-first + multi-recall。先做硬过滤，再按个性化、热门、探索等通道召回。 |
+| 排序目标：CTR vs CVR vs Long-term Satisfaction | 优化 CTR<br>✅ 样本多，反馈快，模型容易训练<br>❌ 容易标题党/图片党，和业务收入及满意度不完全一致 | 优化 CVR/Order<br>✅ 更接近业务收益<br>❌ 订单样本少，反馈慢 | 多目标排序<br>✅ 同时考虑点击、下单、复购、取消率、等待时间、差评风险<br>❌ 目标权重和校准复杂 | 使用多目标排序，例如：<br>w4 * P(cancel/late_delivery/bad_rating) |
+| 实时可用性：强过滤 vs 排序特征 | 把可用性当 hard filter<br>✅ 不会推荐用户无法下单的餐馆<br>❌ 如果状态延迟或误报，会直接损失曝光 | 把可用性当 ranking feature<br>✅ 排序更平滑，不会因为短期波动完全消失<br>❌ 如果特征过期，用户体验会变差 | hard filter + soft penalty<br>✅ 不可服务的过滤掉，可服务但体验差的降权<br>❌ 需要清晰定义哪些是硬约束、哪些是软约束 | 不营业/不可配送/违规下架是 hard filter；等待时间、爆单、价格、取消率作为 soft ranking features。 |
+| 地理索引：PostGIS vs Geohash/H3/S2 vs Redis GEO | PostGIS<br>✅ 地理能力强，支持复杂空间查询<br>❌ 高 QPS 在线推荐压力大，需要 cache/read replica | Geohash/H3/S2<br>✅ 易分片，可预计算 cell -> restaurants，查询快<br>❌ 边界问题，需要查邻居 cell | Redis GEO<br>✅ 实现简单，速度快<br>❌ 本质是 sorted set，复杂 polygon 和频繁大规模更新会吃力 | 在线推荐使用 H3/S2 cell index；复杂配送范围和运营查询用 PostGIS 做 source/校验；Redis GEO 可作为局部低延迟缓存。 |
+| 冷启动：新用户 vs 新餐馆 | 热门兜底<br>✅ 稳定，转化不差<br>❌ 个性化弱，头部效应更严重 | 内容/属性召回<br>✅ 可根据 cuisine、价格、位置、图片、菜单做匹配<br>❌ 内容质量不稳定，无法完全代表真实体验 | 受控探索<br>✅ 可以收集反馈，避免系统只推老餐馆<br>❌ 探索过多会降低短期转化 | 新用户用位置 + 时间 + 热门 + 显式偏好；新餐馆进入 exploration pool，设置小流量 quota 和质量 guardrail。 |
+| 探索利用：只推最高分 vs Bandit | 纯 exploitation<br>✅ 指标稳定，用户体验可控<br>❌ 反馈闭环偏置严重，长尾无法学习 | 固定比例探索<br>✅ 实现简单，容易解释<br>❌ 探索效率低，可能浪费流量 | Contextual bandit<br>✅ 根据不确定性和上下文分配探索流量<br>❌ 实现和评估复杂，需要严格 guardrail | 面试可以说先用固定 exploration slot，再演进到 contextual bandit；所有探索都受质量、距离、营业状态约束。 |
+| 训练数据偏差：position bias 和 selection bias | 直接用点击/订单训练<br>✅ 简单，数据量大<br>❌ 模型会强化现有排序偏差 | 加入 position feature<br>✅ 能部分校正位置影响<br>❌ 不能完全消除曝光选择偏差 | 随机探索 + debias 方法<br>✅ 可以估计 propensity，做 IPS/DR 等反事实评估<br>❌ 需要牺牲少量流量做探索，分析复杂 | 记录完整 impression 和 position，保留 exploration traffic，用 debias/off-policy evaluation 支持模型迭代。 |
+| 缓存和一致性：推荐结果缓存 vs 实时重排 | 缓存完整推荐列表<br>✅ 延迟低，成本低<br>❌ 个性化弱，状态容易过期 | 完全实时计算<br>✅ 最新、最个性化<br>❌ 成本高，峰值压力大 | 缓存候选 + 实时 rerank<br>✅ 召回成本低，最终排序仍能利用实时特征<br>❌ 工程复杂，需要候选 cache 失效和版本管理 | 缓存 city/cell 级候选池和热门池，在线做实时过滤与个性化 rerank；最终返回前检查 availability。 |
 
 ## 关键组件
 

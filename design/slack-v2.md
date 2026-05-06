@@ -67,15 +67,15 @@ flowchart TD
 
 ## 重要讨论点
 
-| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
-|---|---|---|---|
-| 消息写入：DB-first vs Queue-first vs 两级 ACK | A: DB-first<br>B: Queue-first<br>C: 两级 ACK | A ✅ DB commit 后 ack，客户端收到 ack 就表示消息已持久化。 故障恢复简单。 ❌ DB 写延迟直接影响发送延迟。 高峰期 DB 压力更明显。<br>B ✅ 写入快，Kafka 可承载高吞吐。 下游异步落库和 fanout。 ❌ Kafka ack 不等于消息已落库。 落库失败需要补偿，读路径可能短暂查不到。<br>C ✅ 语义清晰，用户体验好。 ❌ 客户端状态机更复杂。 | 当前题目约束下选 DB-first，可靠且容易解释。<br>极高吞吐时演进到 Queue-first 或两级 ACK，但必须明确 ack 语义。 |
-| 消息顺序：全局有序 vs Channel 内有序 | A: 全局 sequencer<br>B: 每个 channel 内递增 `seq`<br>C: timestamp + tie breaker | A ✅ 顺序模型统一。 ❌ 全局 sequencer 容易成为瓶颈。 聊天产品通常没有这个必要。<br>B ✅ 满足用户视角。 容易按 `channel_id` 分区扩展。 ❌ 跨 channel 没有严格顺序。<br>C ✅ 实现简单。 ❌ 时钟漂移和并发下顺序不稳定。 | 用 `channel_id + seq`，只保证 channel 内有序。<br>这是 Staff+ 该主动做的范围收缩。 |
-| Fanout：fanout-on-write vs fanout-on-read vs active-viewer push | A: fanout-on-write<br>B: fanout-on-read<br>C: active-viewer push | A ✅ 读快，unread 和 inbox 容易维护。 实时体验好。 ❌ 大 channel 写放大严重。<br>B ✅ 写路径轻，只写 channel timeline。 成员很多时仍可扩展。 ❌ 用户打开时要从 timeline 拉取。 unread/sidebar 状态更复杂。<br>C ✅ 不给所有成员写扩散。 只推 active viewers，兼顾实时和成本。 ❌ 需要维护 `channel_id -> active connections/gateways`。 | DM/小 channel 用 fanout-on-write。<br>大 channel 用 fanout-on-read + active-viewer push。 |
-| WebSocket 可靠性：只 push vs push + pull 补齐 | A: 只依赖 WebSocket push<br>B: push + reconnect pull<br>C: per-user durable inbox | A ✅ 低延迟，实现直观。 ❌ 不可靠，断线会丢。<br>B ✅ 在线时低延迟。 断线后用 `last_seen_seq` 从 Message DB 补齐。 ❌ 客户端要维护 cursor 和 sync 逻辑。<br>C ✅ 离线恢复简单。 ❌ 写放大和存储成本高。 | 消息使用 push + pull 补齐。<br>typing/presence 只 push 即可。 |
-| Unread count：精确计数 vs 按需计算 vs 混合 | A: 精确 unread counter<br>B: 按需计算<br>C: 混合策略 | A ✅ 侧边栏读取快，体验好。 ❌ 大 channel 写放大严重。<br>B ✅ 写路径轻。 可用 `latest_seq - last_read_seq` 近似计算。 ❌ muted channel、mention-only、删除消息会增加复杂度。<br>C ✅ 小 channel 准确，大 channel 可扩展。 ❌ 语义和实现更复杂。 | 用混合策略。<br>Unread 可以最终一致，不阻塞消息写入。 |
-| Search：同步索引 vs 异步索引 vs 查询时权限校验 | A: 同步写 SearchDB<br>B: 异步索引<br>C: 查询时权限校验 | A ✅ 刚发消息马上可搜。 ❌ SearchDB 故障会阻塞发消息主链路。<br>B ✅ 消息主链路稳定。 Search index 可重试、可重建。 ❌ 搜索有延迟。<br>C ✅ 降低旧索引导致的权限泄露风险。 ❌ 查询路径变长，延迟更高。 | 异步索引 + 查询时权限过滤。<br>Search 是 derived state，不影响消息可靠性。 |
-| Presence：强一致 DB 写入 vs Redis TTL | A: 每次心跳写 DB<br>B: Redis TTL heartbeat<br>C: Gateway 本地状态 + Redis 汇总 | A ✅ 数据持久。 ❌ 心跳写入量巨大。 在线状态不值得用强一致存储。<br>B ✅ 简单、低成本、自然过期。 ❌ 可能有几十秒误差。<br>C ✅ 本地查询快，Redis 存聚合状态。 ❌ Gateway 故障后靠 TTL 收敛。 | Presence 用 Redis TTL，弱一致即可。 |
+| 深挖点 | 方案 A | 方案 B | 方案 C | 推荐表达 |
+| --- | --- | --- | --- | --- |
+| 消息写入：DB-first vs Queue-first vs 两级 ACK | DB-first<br>✅ DB commit 后 ack，客户端收到 ack 就表示消息已持久化<br>❌ DB 写延迟直接影响发送延迟 | Queue-first<br>✅ 写入快，Kafka 可承载高吞吐<br>❌ Kafka ack 不等于消息已落库 | 两级 ACK<br>✅ 语义清晰，用户体验好<br>❌ 客户端状态机更复杂 | 当前题目约束下选 DB-first，可靠且容易解释。<br>极高吞吐时演进到 Queue-first 或两级 ACK，但必须明确 ack 语义。 |
+| 消息顺序：全局有序 vs Channel 内有序 | 全局 sequencer<br>✅ 顺序模型统一<br>❌ 全局 sequencer 容易成为瓶颈 | 每个 channel 内递增 `seq`<br>✅ 满足用户视角<br>❌ 跨 channel 没有严格顺序 | timestamp + tie breaker<br>✅ 实现简单<br>❌ 时钟漂移和并发下顺序不稳定 | 用 `channel_id + seq`，只保证 channel 内有序。<br>这是 Staff+ 该主动做的范围收缩。 |
+| Fanout：fanout-on-write vs fanout-on-read vs active-viewer push | fanout-on-write<br>✅ 读快，unread 和 inbox 容易维护<br>❌ 大 channel 写放大严重 | fanout-on-read<br>✅ 写路径轻，只写 channel timeline<br>❌ 用户打开时要从 timeline 拉取 | active-viewer push<br>✅ 不给所有成员写扩散<br>❌ 需要维护 `channel_id -> active connections/gat... | DM/小 channel 用 fanout-on-write。<br>大 channel 用 fanout-on-read + active-viewer push。 |
+| WebSocket 可靠性：只 push vs push + pull 补齐 | 只依赖 WebSocket push<br>✅ 低延迟，实现直观<br>❌ 不可靠，断线会丢 | push + reconnect pull<br>✅ 在线时低延迟<br>❌ 客户端要维护 cursor 和 sync 逻辑 | per-user durable inbox<br>✅ 离线恢复简单<br>❌ 写放大和存储成本高 | 消息使用 push + pull 补齐。<br>typing/presence 只 push 即可。 |
+| Unread count：精确计数 vs 按需计算 vs 混合 | 精确 unread counter<br>✅ 侧边栏读取快，体验好<br>❌ 大 channel 写放大严重 | 按需计算<br>✅ 写路径轻<br>❌ muted channel、mention-only、删除消息会增加复杂度 | 混合策略<br>✅ 小 channel 准确，大 channel 可扩展<br>❌ 语义和实现更复杂 | 用混合策略。<br>Unread 可以最终一致，不阻塞消息写入。 |
+| Search：同步索引 vs 异步索引 vs 查询时权限校验 | 同步写 SearchDB<br>✅ 刚发消息马上可搜<br>❌ SearchDB 故障会阻塞发消息主链路 | 异步索引<br>✅ 消息主链路稳定<br>❌ 搜索有延迟 | 查询时权限校验<br>✅ 降低旧索引导致的权限泄露风险<br>❌ 查询路径变长，延迟更高 | 异步索引 + 查询时权限过滤。<br>Search 是 derived state，不影响消息可靠性。 |
+| Presence：强一致 DB 写入 vs Redis TTL | 每次心跳写 DB<br>✅ 数据持久<br>❌ 心跳写入量巨大 | Redis TTL heartbeat<br>✅ 简单、低成本、自然过期<br>❌ 可能有几十秒误差 | Gateway 本地状态 + Redis 汇总<br>✅ 本地查询快，Redis 存聚合状态<br>❌ Gateway 故障后靠 TTL 收敛 | Presence 用 Redis TTL，弱一致即可。 |
 
 ## 关键组件
 

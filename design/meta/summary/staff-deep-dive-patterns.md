@@ -10,6 +10,91 @@
 
 面试时可以把下面每个 pattern 当成一个“深挖模块”。当面试官追问一致性、扩展性、失败恢复、实时性、缓存、搜索、推荐、队列时，直接套用。
 
+## 34. 题目到 Deep Dive Pattern 速查表
+
+| 题目 | 最适合讲的 Pattern |
+|---|---|
+| Ads Click Aggregation | Exactly-once vs effect-once；Reconciliation；Durable raw log；OLAP vs real-time serving |
+| A/B Test System | Model/Policy versioning；Experiment guardrail；Read/write path separation；Observability |
+| Calendar System | Strong invariant for event updates；Conflict handling；Notification outbox；Recurring event expansion |
+| Chat App | Per-thread ordering；Inbox/delivery guarantee；Outbox/CDC；WebSocket reconnect recovery；Multi-region home region |
+| Food Ordering + Delivery | Saga state machine；Payment idempotency；Geo index；Rider lease；Realtime tracking not source of truth |
+| Flight System | Saga/compensation；Seat inventory conditional update；External API failure；Reconciliation |
+| Game Leaderboard | Redis ZSET vs DB index；Hot leaderboard sharding；Exact vs approximate rank；Anti-cheat |
+| Google Doc | OT vs CRDT；Version history；Offline edit conflict；Multi-region consistency |
+| High Risk Account ML | Feature consistency；Label delay/noise；Decision logging；Fail open vs fail closed |
+| Hotel Reservation | Double booking；Payment hold TTL；Saga/refund；Strong invariant only for inventory |
+| In-memory KV Rollback | MVCC/version pointer；WAL + snapshot；Retention/GC；Global vs per-key version |
+| Job Scheduler | Lease/visibility timeout；Delayed queue vs scanner；At-least-once + idempotent worker；Workflow engine |
+| Key-Value Store | Consistent hashing；Replication/quorum；WAL recovery；Hinted handoff；LSM read path |
+| LeetCode | Sandbox isolation；Queue worker idempotency；Polling vs SSE；Storage DB vs S3 |
+| Live Comment | SSE/WebSocket；Hot video partition；Pub/Sub fanout；Cursor recovery；Multi-DC CDC |
+| LLM Inference | Admission control；Priority scheduling；KV-cache-aware routing；Streaming protocol；Billing/audit |
+| Monitoring / Logs | Push vs pull；Cardinality control；PII masking；Downsampling/retention；Durable log |
+| Netflix / YouTube | CDN/edge cache；Manifest authorization；ABR；Transcoding workflow；QoE observability |
+| News Feed | Fanout-on-write vs read；Active user cache；Privacy invalidation；Read model rebuild |
+| Online Auction | Unique winner invariant；Highest bid rollback；Cache/DB consistency；Payment trigger |
+| Price Drop Tracker | Scheduler due table；CDC/trigger；Notification idempotency；TTL not correctness |
+| Proximity / Uber | H3/S2 vs Geohash/PostGIS；Geo sharding；High-frequency location updates；Driver/rider lease |
+| RAG Chatbot | Ingestion pipeline；Chunk/index freshness；Metadata filtering；Evaluation metrics；Replay/reindex |
+| Rate Limiter | Token bucket vs sliding window；Local vs global quota；Redis hot key；Fail open vs fail closed |
+| Restaurant Recommendation | Geo-first recall；Feature consistency；Exploration vs exploitation；Availability read-time validation |
+| Robinhood | Order state machine；External exchange failure；Idempotency；Live price updates；Reconciliation |
+| RSS News Aggregator | Polling + webhook；Feed cache freshness；Pagination consistency；Personalized materialized feed |
+| S3 / Object Store | Object ID vs name；Versioning/delete marker；Replication vs erasure coding；Metadata consistency；GC |
+| 秒杀 / Ticketmaster | Virtual queue；Conditional inventory update；Hold TTL；Hot event sharding；Async result notification |
+| Short Video Recommendation | Multi-stage ranking；Realtime features；Exploration；Guardrail metrics；Training-serving skew |
+| Slack / WhatsApp Status | Hybrid fanout；Search permission validation；E2EE/client-side search；Expiration read check |
+| TopK / Trending Hashtags | Fixed vs arbitrary window；Exact vs sketch；Late/duplicate events；Hot partition；OLAP fallback |
+| Tracing Service | Sampling strategy；Context propagation；Raw span vs summary；High cardinality tags；Replay/debug |
+| TypeAhead | Trie vs prefix hash；Realtime trending；Offline rebuild；Ranking metrics；Cache freshness |
+| Web Crawler | Frontier queues；Politeness/rate limit；URL/content dedup；Retry + DLQ；Crawl trap detection |
+
+面试前快速用法：
+
+- 涉及钱、库存、权限：先讲 **Strong invariant + source of truth + idempotency**。
+- 涉及搜索、feed、cache：先讲 **Derived data + read-time validation + rebuild**。
+- 涉及 stream/pipeline：先讲 **At-least-once + idempotent sink + replay/reconciliation**。
+- 涉及实时推送：先讲 **WebSocket/SSE is delivery channel, not source of truth**。
+- 涉及 ML/推荐：先讲 **feature consistency + online/offline metrics + guardrails**。
+
+## 35. Deep Dive 极简方案优缺点表
+
+| Deep Dive 点 | 方案 A | 方案 B | 方案 C |
+|---|---|---|---|
+| Exactly-once / Effect-once | At-least-once + 幂等<br>✅最常用、可 replay<br>❌sink 必须幂等 | Transaction / 2PC<br>✅语义强<br>❌慢且复杂 | Flink checkpoint + 幂等 sink<br>✅stream 友好<br>❌外部 sink 仍要配合 |
+| Source of Truth vs Derived Data | 只读 SOT<br>✅正确<br>❌慢 | Derived read model<br>✅快<br>❌stale | SOT + derived validation<br>✅快且守住正确性<br>❌链路更复杂 |
+| DB 和 MQ 一致性 | 直接双写<br>✅简单<br>❌可能漏事件 | Outbox<br>✅DB+event 原子<br>❌多 relay | CDC<br>✅低侵入<br>❌延迟和 schema 治理 |
+| Idempotency / Dedup | Idempotency key<br>✅防重试<br>❌要存状态 | Unique constraint<br>✅强约束<br>❌冲突处理麻烦 | Dedup window<br>✅适合 stream<br>❌窗口外重复挡不住 |
+| Ordering Guarantee | Global order<br>✅心智简单<br>❌瓶颈 | Per-entity order<br>✅可扩展<br>❌跨实体无序 | Timestamp order<br>✅实现简单<br>❌并发/时钟不稳 |
+| Push vs Pull / Fanout | Fanout-on-write<br>✅读快<br>❌写放大 | Fanout-on-read<br>✅写轻<br>❌读复杂 | Hybrid active push<br>✅平衡实时和成本<br>❌routing 复杂 |
+| Cache Consistency | Write-through<br>✅读简单<br>❌写慢且仍可能乱序 | Cache-aside<br>✅简单<br>❌stale/cache miss | Event-driven cache<br>✅可重放<br>❌最终一致 |
+| Double Booking / Unique Winner | DB conditional write<br>✅正确<br>❌热点冲突 | Distributed lock<br>✅直观<br>❌TTL/死锁风险 | Single writer<br>✅顺序强<br>❌单点吞吐 |
+| Saga / Compensation | Big transaction<br>✅强一致<br>❌跨服务差 | Saga<br>✅可扩展<br>❌补偿复杂 | Workflow engine<br>✅可观测可恢复<br>❌重组件 |
+| Worker Failure / Lease | Health check<br>✅简单<br>❌慢且不准 | Lease / visibility timeout<br>✅可恢复<br>❌要续租 | Idempotent replay<br>✅失败可重跑<br>❌业务幂等要设计 |
+| Backpressure / Admission | Infinite queue<br>✅不拒绝<br>❌尾延迟爆炸 | Bounded queue<br>✅保护系统<br>❌会拒绝 | Priority / shedding<br>✅保 SLA<br>❌公平复杂 |
+| Hot Key / Hot Entity | 普通 hash<br>✅简单<br>❌热点无解 | Shard / bucket hot key<br>✅抗热点<br>❌聚合复杂 | Single entity actor<br>✅顺序正确<br>❌单实体吞吐有限 |
+| Geo Index | PostGIS<br>✅准确灵活<br>❌写扩展弱 | Geohash<br>✅简单<br>❌边界问题 | H3 / S2<br>✅工业级分层<br>❌理解和运维复杂 |
+| Polling / SSE / WebSocket | Polling<br>✅简单兼容<br>❌浪费/延迟 | SSE<br>✅单向推送简单<br>❌只适合 server push | WebSocket<br>✅双向低延迟<br>❌连接运维复杂 |
+| TTL / Expiration | DB TTL<br>✅省事<br>❌不准时 | Delayed queue<br>✅更准<br>❌复杂 | Read-time expires_at<br>✅保证正确性<br>❌每次读要校验 |
+| Search Freshness / Correctness | Sync index<br>✅新鲜<br>❌阻塞主链路 | Async index<br>✅稳定可重试<br>❌搜索延迟 | Read-time ACL/delete check<br>✅防泄露<br>❌查询更慢 |
+| Multi-region Consistency | Single home region<br>✅简单正确<br>❌跨区延迟 | Active-active<br>✅低延迟<br>❌冲突复杂 | Local write + async replication<br>✅性能好<br>❌最终一致 |
+| Reconciliation | 无对账<br>✅简单<br>❌错账难修 | Offline reconciliation<br>✅可修复<br>❌滞后 | Raw log replay<br>✅可回放审计<br>❌存储成本 |
+| Sliding Window / TopK | Exact count<br>✅准确<br>❌state 大 | Sketch / approximate<br>✅省内存<br>❌有误差 | OLAP window query<br>✅任意窗口<br>❌延迟高 |
+| Feature Consistency | Offline feature<br>✅稳定<br>❌不新鲜 | Realtime feature<br>✅新鲜<br>❌复杂 | Feature store<br>✅训练/服务一致<br>❌成本高 |
+| Exploration vs Exploitation | Pure exploit<br>✅短期指标好<br>❌信息茧房 | Random explore<br>✅简单<br>❌体验波动 | Bandit<br>✅动态探索<br>❌调参与归因难 |
+| Observability / Replay | Metrics only<br>✅便宜<br>❌难 debug | Logs/traces<br>✅可定位<br>❌成本高 | Replayable event log<br>✅可重建<br>❌治理复杂 |
+| Read vs Write Optimization | Write-optimized<br>✅吞吐高<br>❌读慢 | Read model / materialized view<br>✅读快<br>❌stale | CQRS<br>✅边界清楚<br>❌系统复杂 |
+| Strong Consistency Boundary | Global strong consistency<br>✅简单正确<br>❌慢/贵 | Per-entity invariant<br>✅高性价比<br>❌要定义边界 | Eventual consistency elsewhere<br>✅可扩展<br>❌需要补偿/校验 |
+| Workflow Engine vs Queue | Queue + worker<br>✅轻量<br>❌状态分散 | Workflow engine<br>✅可恢复可观测<br>❌重组件 | DB state machine<br>✅可控<br>❌要自建调度重试 |
+| Security / Privacy | Client-side filter<br>✅简单<br>❌会泄露 | Server-side ACL<br>✅安全<br>❌延迟高 | Token/signed URL<br>✅边界清楚<br>❌过期/撤销复杂 |
+| Versioning | In-place update<br>✅简单<br>❌难回滚 | Versioned config/model<br>✅可回滚审计<br>❌治理成本 | Canary/shadow<br>✅低风险发布<br>❌成本更高 |
+| Retention / GC | Keep all<br>✅可回放<br>❌贵 | TTL / compaction<br>✅省钱<br>❌丢历史 | Tiered retention<br>✅成本平衡<br>❌策略复杂 |
+| Approximate vs Exact | Exact<br>✅可信<br>❌贵 | Approximate<br>✅快/省<br>❌误差 | Hybrid<br>✅热路径快、离线修正<br>❌双链路 |
+| Materialized View | Query-time compute<br>✅新鲜<br>❌慢 | Precompute<br>✅快<br>❌stale | Incremental materialization<br>✅低延迟<br>❌一致性复杂 |
+| Local vs Global Quota | Global quota<br>✅准确<br>❌跨区慢 | Local quota<br>✅低延迟<br>❌会超发 | Local + global sync<br>✅平衡<br>❌短暂不准 |
+| Durable Log / Replay | State only<br>✅便宜<br>❌难恢复 | Durable log<br>✅可 replay<br>❌存储成本 | Log + snapshot<br>✅恢复快<br>❌生命周期复杂 |
+
 ## 0. 怎么把优缺点讲得更像 Staff+
 
 普通回答经常只说“优点是简单，缺点是复杂”。Staff+ 的表达要更具体：这个方案为什么简单，复杂在哪里，规模变大后会发生什么，失败时系统怎么表现。
@@ -2288,51 +2373,3 @@
 - `Search freshness can be eventually consistent, but permission and deletion correctness cannot.`
 - `TTL is cleanup, not correctness. The read path still checks expires_at.`
 - `If this is a financial or inventory-related system, I would add reconciliation and raw event replay.`
-
-## 34. 题目到 Deep Dive Pattern 速查表
-
-| 题目 | 最适合讲的 Pattern |
-|---|---|
-| Ads Click Aggregation | Exactly-once vs effect-once；Reconciliation；Durable raw log；OLAP vs real-time serving |
-| A/B Test System | Model/Policy versioning；Experiment guardrail；Read/write path separation；Observability |
-| Calendar System | Strong invariant for event updates；Conflict handling；Notification outbox；Recurring event expansion |
-| Chat App | Per-thread ordering；Inbox/delivery guarantee；Outbox/CDC；WebSocket reconnect recovery；Multi-region home region |
-| Food Ordering + Delivery | Saga state machine；Payment idempotency；Geo index；Rider lease；Realtime tracking not source of truth |
-| Flight System | Saga/compensation；Seat inventory conditional update；External API failure；Reconciliation |
-| Game Leaderboard | Redis ZSET vs DB index；Hot leaderboard sharding；Exact vs approximate rank；Anti-cheat |
-| Google Doc | OT vs CRDT；Version history；Offline edit conflict；Multi-region consistency |
-| High Risk Account ML | Feature consistency；Label delay/noise；Decision logging；Fail open vs fail closed |
-| Hotel Reservation | Double booking；Payment hold TTL；Saga/refund；Strong invariant only for inventory |
-| In-memory KV Rollback | MVCC/version pointer；WAL + snapshot；Retention/GC；Global vs per-key version |
-| Job Scheduler | Lease/visibility timeout；Delayed queue vs scanner；At-least-once + idempotent worker；Workflow engine |
-| Key-Value Store | Consistent hashing；Replication/quorum；WAL recovery；Hinted handoff；LSM read path |
-| LeetCode | Sandbox isolation；Queue worker idempotency；Polling vs SSE；Storage DB vs S3 |
-| Live Comment | SSE/WebSocket；Hot video partition；Pub/Sub fanout；Cursor recovery；Multi-DC CDC |
-| LLM Inference | Admission control；Priority scheduling；KV-cache-aware routing；Streaming protocol；Billing/audit |
-| Monitoring / Logs | Push vs pull；Cardinality control；PII masking；Downsampling/retention；Durable log |
-| Netflix / YouTube | CDN/edge cache；Manifest authorization；ABR；Transcoding workflow；QoE observability |
-| News Feed | Fanout-on-write vs read；Active user cache；Privacy invalidation；Read model rebuild |
-| Online Auction | Unique winner invariant；Highest bid rollback；Cache/DB consistency；Payment trigger |
-| Price Drop Tracker | Scheduler due table；CDC/trigger；Notification idempotency；TTL not correctness |
-| Proximity / Uber | H3/S2 vs Geohash/PostGIS；Geo sharding；High-frequency location updates；Driver/rider lease |
-| RAG Chatbot | Ingestion pipeline；Chunk/index freshness；Metadata filtering；Evaluation metrics；Replay/reindex |
-| Rate Limiter | Token bucket vs sliding window；Local vs global quota；Redis hot key；Fail open vs fail closed |
-| Restaurant Recommendation | Geo-first recall；Feature consistency；Exploration vs exploitation；Availability read-time validation |
-| Robinhood | Order state machine；External exchange failure；Idempotency；Live price updates；Reconciliation |
-| RSS News Aggregator | Polling + webhook；Feed cache freshness；Pagination consistency；Personalized materialized feed |
-| S3 / Object Store | Object ID vs name；Versioning/delete marker；Replication vs erasure coding；Metadata consistency；GC |
-| 秒杀 / Ticketmaster | Virtual queue；Conditional inventory update；Hold TTL；Hot event sharding；Async result notification |
-| Short Video Recommendation | Multi-stage ranking；Realtime features；Exploration；Guardrail metrics；Training-serving skew |
-| Slack / WhatsApp Status | Hybrid fanout；Search permission validation；E2EE/client-side search；Expiration read check |
-| TopK / Trending Hashtags | Fixed vs arbitrary window；Exact vs sketch；Late/duplicate events；Hot partition；OLAP fallback |
-| Tracing Service | Sampling strategy；Context propagation；Raw span vs summary；High cardinality tags；Replay/debug |
-| TypeAhead | Trie vs prefix hash；Realtime trending；Offline rebuild；Ranking metrics；Cache freshness |
-| Web Crawler | Frontier queues；Politeness/rate limit；URL/content dedup；Retry + DLQ；Crawl trap detection |
-
-面试前快速用法：
-
-- 涉及钱、库存、权限：先讲 **Strong invariant + source of truth + idempotency**。
-- 涉及搜索、feed、cache：先讲 **Derived data + read-time validation + rebuild**。
-- 涉及 stream/pipeline：先讲 **At-least-once + idempotent sink + replay/reconciliation**。
-- 涉及实时推送：先讲 **WebSocket/SSE is delivery channel, not source of truth**。
-- 涉及 ML/推荐：先讲 **feature consistency + online/offline metrics + guardrails**。

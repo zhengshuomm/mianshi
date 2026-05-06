@@ -69,16 +69,16 @@ flowchart TD
 
 ## 重要讨论点
 
-| 深挖点 | 主要方案 / Option | 优缺点 / Trade-off | 推荐表达 |
-|---|---|---|---|
-| 搜索结果一致性：Cache Quote vs Revalidate | A: 搜索时直接打 airline/GDS<br>B: 搜索读本地 cache/index<br>C: 搜索 cache + 下单前 revalidate | A ✅ 结果新鲜。 ❌ 外部 API 慢且贵，高峰下无法承受。<br>B ✅ 低延迟、高吞吐、可排序和聚合。 ❌ 价格和库存可能 stale。<br>C ✅ 搜索快，同时 booking 前保证价格/库存正确。 ❌ 用户可能看到价格变化，需要产品处理。 | Search 只返回 quote。<br>Booking hold 前必须 reprice/revalidate。<br>面试要明确：搜索一致性和下单一致性是两条不同路径。 |
-| 库存模型：Seat Count vs Fare Class | A: 只按 flight_id 维护总座位数<br>B: 按 `flight_id + fare_class` 维护 availability<br>C: Supplier authoritative inventory | A ✅ 简单。 ❌ 真实航空价格按 cabin/fare class 管理，总座位数不足以判断可卖票。<br>B ✅ 符合航空库存和价格体系。 ❌ fare class 之间可能有关联，低价舱售罄后可卖高价舱。<br>C ✅ 最终以 airline/GDS 为准。 ❌ 外部依赖慢、贵、可能状态不确定。 | 本地缓存 `flight_id + fare_class` 做搜索和预过滤。<br>hold 前调用 supplier revalidate/hold。<br>不把本地 cache 当最终库存 source of truth。 |
-| 并发预订：Pessimistic Lock vs Optimistic Lock vs Supplier Hold | A: 本地 pessimistic lock<br>B: 本地 optimistic lock / conditional update<br>C: Supplier hold / PNR hold | A ✅ 库存扣减直观。 ❌ 航班热门时锁竞争高；对外部库存没有最终控制力。<br>B ✅ 吞吐高，无长锁。 ❌ 冲突时重试，热门航班失败率高。<br>C ✅ 真正锁住外部库存。 ❌ 外部接口慢，hold 有过期时间和规则。 | 如果平台不拥有库存，supplier hold 是 correctness boundary。<br>本地 Booking DB 记录 hold 状态和过期时间。<br>支付和出票不能持有本地 DB lock。 |
-| 支付和出票状态机 | A: 支付时同步出票<br>B: 支付成功后异步出票<br>C: 先出票后支付 | A ✅ 用户立即知道最终结果。 ❌ 外部出票慢会拖慢 payment callback；失败恢复复杂。<br>B ✅ 支付状态和出票解耦；worker 可重试和恢复。 ❌ 用户会看到 `ticketing` 中间状态。<br>C ✅ 保证有票再收钱。 ❌ 占用票源且可能无法收款，风险高。 | `held -> paid -> ticketing -> ticketed`。<br>出票失败时要退款或人工处理。<br>状态机必须能表达 unknown，而不是只有 success/fail。 |
-| 外部系统失败：Retry vs Unknown vs Reconciliation | A: 网络超时直接重试<br>B: 使用 external request id 幂等<br>C: Unknown 状态 + reconciliation | A ✅ 简单。 ❌ 如果外部已经成功但响应丢失，重试可能重复 hold/出票。<br>B ✅ 超时后可安全重试或查询。 ❌ 并非所有 provider 支持一致的幂等语义。<br>C ✅ 不会把未知误判为失败；可定期查 supplier 修复。 ❌ 用户体验复杂，系统要维护修复流程。 | 对 hold/ticket/cancel 都生成 `external_request_id`。<br>网络超时进入 `unknown` 或 `pending_confirmation`。<br>Reconciliation worker 查询 supplier PNR/ticket status 后更新本地。 |
-| Hold Expiration：锁到支付完成 vs 状态机过期 | A: 一直锁库存直到支付完成<br>B: 带过期时间的 hold<br>C: 不 hold，支付后再确认 | A ✅ 看似简单。 ❌ 支付可能持续很久，库存利用率低，外部 hold 也会过期。<br>B ✅ 用户有支付时间；未支付自动释放。 ❌ 支付成功和过期释放有竞态。<br>C ✅ 不占库存。 ❌ 用户支付后可能无票，体验差。 | 创建 booking hold，设置短 TTL。<br>Expiration Worker 只允许 `held -> expired`。<br>Payment callback 只允许 `held -> paid`。<br>用 CAS/version 保证只有一个转换成功。 |
-| Overbooking | A: 严格不超卖<br>B: 航空公司层面 overbooking<br>C: OTA 不主动 overbook | A ✅ 正确性清晰。 ❌ 可能降低销售效率，尤其取消率高时。<br>B ✅ 提高上座率，是业务策略。 ❌ 需要补偿、改签、升舱、赔付流程。<br>C ✅ 避免承担库存风险。 ❌ 依赖 supplier 返回的可售性。 | 如果是 OTA/Robinhood-like 交易平台，不主动 overbook。<br>如果是航空公司自营系统，overbooking 是显式配置的 yield management 策略。<br>面试里要区分业务策略 overbook 和并发 bug 导致超卖。 |
-| Search Cache 更新和失效 | A: 定时全量刷新<br>B: 增量更新<br>C: 增量 + 定期 reconciliation | A ✅ 实现简单。 ❌ 更新滞后，外部 API 成本高。<br>B ✅ 更实时，成本低。 ❌ feed 丢失或乱序会导致 cache 错。<br>C ✅ 正常走增量，定期校准修复 drift。 ❌ 需要 feed offset、版本和回放机制。 | Search Cache 通过 supplier feed 增量更新。<br>热门 route/date 高频刷新。<br>下单前 revalidate 兜底搜索 stale。 |
+| 深挖点 | 方案 A | 方案 B | 方案 C | 推荐表达 |
+| --- | --- | --- | --- | --- |
+| 搜索结果一致性：Cache Quote vs Revalidate | 搜索时直接打 airline/GDS<br>✅ 结果新鲜<br>❌ 外部 API 慢且贵，高峰下无法承受 | 搜索读本地 cache/index<br>✅ 低延迟、高吞吐、可排序和聚合<br>❌ 价格和库存可能 stale | 搜索 cache + 下单前 revalidate<br>✅ 搜索快，同时 booking 前保证价格/库存正确<br>❌ 用户可能看到价格变化，需要产品处理 | Search 只返回 quote。<br>Booking hold 前必须 reprice/revalidate。 |
+| 库存模型：Seat Count vs Fare Class | 只按 flight_id 维护总座位数<br>✅ 简单<br>❌ 真实航空价格按 cabin/fare class 管理，总座位数不足以判断可卖票 | 按 `flight_id + fare_class` 维护 availability<br>✅ 符合航空库存和价格体系<br>❌ fare class 之间可能有关联，低价舱售罄后可卖高价舱 | Supplier authoritative inventory<br>✅ 最终以 airline/GDS 为准<br>❌ 外部依赖慢、贵、可能状态不确定 | 本地缓存 `flight_id + fare_class` 做搜索和预过滤。<br>hold 前调用 supplier revalidate/hold。 |
+| 并发预订：Pessimistic Lock vs Optimistic Lock vs Supplier Hold | 本地 pessimistic lock<br>✅ 库存扣减直观<br>❌ 航班热门时锁竞争高 | 本地 optimistic lock / conditional update<br>✅ 吞吐高，无长锁<br>❌ 冲突时重试，热门航班失败率高 | Supplier hold / PNR hold<br>✅ 真正锁住外部库存<br>❌ 外部接口慢，hold 有过期时间和规则 | 如果平台不拥有库存，supplier hold 是 correctness boundary。<br>本地 Booking DB 记录 hold 状态和过期时间。 |
+| 支付和出票状态机 | 支付时同步出票<br>✅ 用户立即知道最终结果<br>❌ 外部出票慢会拖慢 payment callback | 支付成功后异步出票<br>✅ 支付状态和出票解耦<br>❌ 用户会看到 `ticketing` 中间状态 | 先出票后支付<br>✅ 保证有票再收钱<br>❌ 占用票源且可能无法收款，风险高 | `held -> paid -> ticketing -> ticketed`。<br>出票失败时要退款或人工处理。 |
+| 外部系统失败：Retry vs Unknown vs Reconciliation | 网络超时直接重试<br>✅ 简单<br>❌ 如果外部已经成功但响应丢失，重试可能重复 hold/出票 | 使用 external request id 幂等<br>✅ 超时后可安全重试或查询<br>❌ 并非所有 provider 支持一致的幂等语义 | Unknown 状态 + reconciliation<br>✅ 不会把未知误判为失败<br>❌ 用户体验复杂，系统要维护修复流程 | 对 hold/ticket/cancel 都生成 `external_request_id`。<br>网络超时进入 `unknown` 或 `pending_confirmation`。 |
+| Hold Expiration：锁到支付完成 vs 状态机过期 | 一直锁库存直到支付完成<br>✅ 看似简单<br>❌ 支付可能持续很久，库存利用率低，外部 hold 也会过期 | 带过期时间的 hold<br>✅ 用户有支付时间<br>❌ 支付成功和过期释放有竞态 | 不 hold，支付后再确认<br>✅ 不占库存<br>❌ 用户支付后可能无票，体验差 | 创建 booking hold，设置短 TTL。<br>Expiration Worker 只允许 `held -> expired`。 |
+| Overbooking | 严格不超卖<br>✅ 正确性清晰<br>❌ 可能降低销售效率，尤其取消率高时 | 航空公司层面 overbooking<br>✅ 提高上座率，是业务策略<br>❌ 需要补偿、改签、升舱、赔付流程 | OTA 不主动 overbook<br>✅ 避免承担库存风险<br>❌ 依赖 supplier 返回的可售性 | 如果是 OTA/Robinhood-like 交易平台，不主动 overbook。<br>如果是航空公司自营系统，overbooking 是显式配置的 yield management 策略。 |
+| Search Cache 更新和失效 | 定时全量刷新<br>✅ 实现简单<br>❌ 更新滞后，外部 API 成本高 | 增量更新<br>✅ 更实时，成本低<br>❌ feed 丢失或乱序会导致 cache 错 | 增量 + 定期 reconciliation<br>✅ 正常走增量，定期校准修复 drift<br>❌ 需要 feed offset、版本和回放机制 | Search Cache 通过 supplier feed 增量更新。<br>热门 route/date 高频刷新。 |
 
 ## 关键组件
 
