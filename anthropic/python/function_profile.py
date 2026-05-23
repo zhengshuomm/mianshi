@@ -35,47 +35,43 @@ class Solution:
 
 class Solution2:
     def debouncedEvents(self, samples: List[str], n: int) -> List[str]:
-        path_info = {} # key: 完整路径 tuple, value: {count, start_time, is_active}
-        prev_sample_paths = set()
+        if n <= 0:
+            raise ValueError("n must be positive")
+
         results = []
+        # active[i] 对应当前栈深度 i 上的 frame；下标即 parent path 前缀
+        active = []
 
         for sample in samples:
             parts = sample.split(":")
             timestamp = parts[0]
-            stack = parts[1].split("->") if parts[1] else []
-            
-            current_sample_paths = set()
-            
-            # 1. 识别当前所有路径
-            for i in range(1, len(stack) + 1):
-                path_tuple = tuple(stack[:i])
-                func_name = stack[i-1] # 拿到当前节点的函数名
-                current_sample_paths.add(path_tuple)
-                
-                if path_tuple not in path_info:
-                    path_info[path_tuple] = {"count": 1, "start_time": timestamp, "is_active": False}
-                else:
-                    # 只有连续出现才计数，如果中间断过，在下方第2步已被清理或重置
-                    path_info[path_tuple]["count"] += 1
-                
-                # 激活检测
-                info = path_info[path_tuple]
-                if not info["is_active"] and info["count"] >= n:
-                    info["is_active"] = True
-                    # 注意：这里只输出 func_name，而不是 '->'.join(path_tuple)
-                    results.append(f"start:{info['start_time']}:{func_name}")
+            current = parts[1].split("->") if parts[1] else []
 
-            # 2. 处理消失的路径 (End 事件)
-            # 必须按照从内到外的顺序结束，所以要对路径长度进行降序排序
-            for path_tuple in sorted(prev_sample_paths, key=len, reverse=True):
-                if path_tuple not in current_sample_paths:
-                    info = path_info[path_tuple]
-                    if info["is_active"]:
-                        results.append(f"end:{timestamp}:{path_tuple[-1]}")
-                    # 路径一旦消失，立即删除记录，下次再出现重新计数
-                    del path_info[path_tuple]
+            common = 0
+            while common < len(active) and common < len(current) and active[common]["name"] == current[common]:
+                common += 1
 
-            prev_sample_paths = current_sample_paths
+            # 栈在 common 深度被打断：从内到外结束，未 confirmed 的不输出 end
+            for i in range(len(active) - 1, common - 1, -1):
+                frame = active[i]
+                if frame["started"]:
+                    results.append(f"end:{timestamp}:{frame['name']}")
+                active.pop(i)
+
+            # 公共前缀连续出现，streak++
+            for i in range(common):
+                frame = active[i]
+                frame["streak"] += 1
+                if not frame["started"] and frame["streak"] >= n:
+                    frame["started"] = True
+                    results.append(f"start:{timestamp}:{frame['name']}")
+
+            # 新 frame，streak 从 1 开始
+            for i in range(common, len(current)):
+                started = n == 1
+                active.append({"name": current[i], "streak": 1, "started": started})
+                if started:
+                    results.append(f"start:{timestamp}:{current[i]}")
 
         return results
 
@@ -158,10 +154,10 @@ def _test_solution2_debounce_chain():
         "6:main->B",
     ]
     expected = [
-        "start:1:main",
-        "start:2:A",
+        "start:2:main",
+        "start:3:A",
         "end:4:A",
-        "start:4:B",
+        "start:5:B",
     ]
     assert Solution2().debouncedEvents(samples, 2) == expected
 
