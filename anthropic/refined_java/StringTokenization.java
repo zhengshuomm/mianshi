@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 
 // https://www.1point3acres.com/interview/problems/post/7100003
+// https://www.1point3acres.com/bbs/thread-1164836-1-1.html
 
 public class StringTokenization {
     private static class TrieNode {

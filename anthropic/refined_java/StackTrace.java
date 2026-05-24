@@ -3,6 +3,7 @@ package anthropic.refined_java;
 import java.util.ArrayList;
 import java.util.List;
 
+// https://www.1point3acres.com/bbs/thread-1145186-1-1.html
 class Sample {
     double ts;
     List<String> stack;
@@ -34,14 +35,10 @@ public class StackTrace {
     // Part 1: 把每次调用栈变化转换成 start/end 事件。
     public List<Event> convertSamplesToEvents(List<Sample> samples) {
         List<Event> events = new ArrayList<>();
-
         List<String> previous = new ArrayList<>();
-
         for (Sample sample : samples) {
             List<String> current = sample.stack;
-
             int common = commonPrefixLength(previous, current);
-
             // 例如 main -> a -> b 变成 main 时，必须先 end b，再 end a。
             for (int i = previous.size() - 1; i >= common; i--) {
                 events.add(new Event("end", sample.ts, previous.get(i)));
@@ -51,10 +48,8 @@ public class StackTrace {
             for (int i = common; i < current.size(); i++) {
                 events.add(new Event("start", sample.ts, current.get(i)));
             }
-
             previous = current;
         }
-
         return events;
     }
 
@@ -148,6 +143,49 @@ public class StackTrace {
             i++;
         }
         return i;
+    }
+
+    // Part 3: suffix 版本。从调用栈底部，也就是 leaf function 开始比较。
+    public List<Event> convertSamplesToEventsWithSuffix(List<Sample> samples) {
+        List<Event> events = new ArrayList<>();
+        List<String> previous = new ArrayList<>();
+
+        for (Sample sample : samples) {
+            List<String> current = sample.stack;
+
+            // common suffix 是两次调用栈里相同的最深层调用链。
+            // 和 Part 1 不同，这里保留的是 leaf 往上的相同部分。
+            int common = commonSuffixLength(previous, current);
+
+            // 旧栈中不属于 common suffix 的部分需要结束。
+            // 这些 frame 在 common suffix 外面，所以从更靠近 leaf 的位置往外 end。
+            for (int i = previous.size() - common - 1; i >= 0; i--) {
+                events.add(new Event("end", sample.ts, previous.get(i)));
+            }
+
+            // 新栈中不属于 common suffix 的部分需要开始。
+            // start 仍然保持从外层到内层的顺序。
+            for (int i = 0; i < current.size() - common; i++) {
+                events.add(new Event("start", sample.ts, current.get(i)));
+            }
+
+            previous = current;
+        }
+
+        return events;
+    }
+
+    private int commonSuffixLength(List<String> a, List<String> b) {
+        // 从调用栈底部开始比较。只要 leaf 往上的后缀相同，就认为这段调用链延续。
+        int count = 0;
+        int i = a.size() - 1;
+        int j = b.size() - 1;
+        while (i >= 0 && j >= 0 && a.get(i).equals(b.get(j))) {
+            count++;
+            i--;
+            j--;
+        }
+        return count;
     }
 
     public static void main(String[] args) {
@@ -312,6 +350,72 @@ public class StackTrace {
         assertThrows(
             "part2 invalid n",
             () -> converter.convertSamplesToDebouncedEvents(List.of(), 0)
+        );
+
+        assertEvents(
+            "part3 empty input",
+            converter.convertSamplesToEventsWithSuffix(List.of()),
+            List.of()
+        );
+
+        assertEvents(
+            "part3 depth change restarts because leaf changes",
+            converter.convertSamplesToEventsWithSuffix(List.of(
+                new Sample(1.0, List.of("main")),
+                new Sample(2.0, List.of("main", "foo")),
+                new Sample(3.0, List.of("main"))
+            )),
+            List.of(
+                new Event("start", 1.0, "main"),
+                new Event("end", 2.0, "main"),
+                new Event("start", 2.0, "main"),
+                new Event("start", 2.0, "foo"),
+                new Event("end", 3.0, "foo"),
+                new Event("end", 3.0, "main"),
+                new Event("start", 3.0, "main")
+            )
+        );
+
+        assertEvents(
+            "part3 leaf change restarts shared prefix",
+            converter.convertSamplesToEventsWithSuffix(List.of(
+                new Sample(5.0, List.of("main", "foo")),
+                new Sample(10.0, List.of("main", "bar")),
+                new Sample(15.0, List.of("main", "foo"))
+            )),
+            List.of(
+                new Event("start", 5.0, "main"),
+                new Event("start", 5.0, "foo"),
+                new Event("end", 10.0, "foo"),
+                new Event("end", 10.0, "main"),
+                new Event("start", 10.0, "main"),
+                new Event("start", 10.0, "bar"),
+                new Event("end", 15.0, "bar"),
+                new Event("end", 15.0, "main"),
+                new Event("start", 15.0, "main"),
+                new Event("start", 15.0, "foo")
+            )
+        );
+
+        assertEvents(
+            "part3 keeps common leaf suffix",
+            converter.convertSamplesToEventsWithSuffix(List.of(
+                new Sample(10.0, List.of("taskA", "process", "save")),
+                new Sample(20.0, List.of("taskB", "process", "save")),
+                new Sample(30.0, List.of("taskB", "flush"))
+            )),
+            List.of(
+                new Event("start", 10.0, "taskA"),
+                new Event("start", 10.0, "process"),
+                new Event("start", 10.0, "save"),
+                new Event("end", 20.0, "taskA"),
+                new Event("start", 20.0, "taskB"),
+                new Event("end", 30.0, "save"),
+                new Event("end", 30.0, "process"),
+                new Event("end", 30.0, "taskB"),
+                new Event("start", 30.0, "taskB"),
+                new Event("start", 30.0, "flush")
+            )
         );
 
         System.out.println("All StackTrace tests passed.");

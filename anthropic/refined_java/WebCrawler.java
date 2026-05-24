@@ -15,10 +15,39 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+
+// import org.jsoup.Jsoup;
+// import org.jsoup.nodes.Document;
+// import org.jsoup.select.Elements;
+
+// // # https://www.1point3acres.com/bbs/thread-1093709-1-1.html
+
+// class Parser {
+//     public List<String> getPageLinks(String url) throws IOException {
+//         Document doc = Jsoup.connect(url).get();
+
+//         Set<String> result = new HashSet<>();
+
+//         for (Element link : doc.select("a[href]")) {
+//             String href = link.attr("href");
+
+//             try {
+//                 URL abs = new URL(new URL(url), href);
+
+//                 if (abs.toString().startsWith("http")) {
+//                     result.add(abs.toString());
+//                 }
+//             } catch (MalformedURLException e) {
+//                 // ignore bad links
+//             }
+//         }
+
+//         return new ArrayList<>(result);
+//     }
+// }
 
 
 public class WebCrawler {
