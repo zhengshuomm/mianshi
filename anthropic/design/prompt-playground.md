@@ -1,5 +1,6 @@
 # 设计 Prompt Playground System
 
+https://www.1point3acres.com/interview/problems/post/7100017
 ## 功能需求
 
 - Prompt 编辑器：用户能创建、编辑、保存 prompt，支持最大 10MB 文本编辑。

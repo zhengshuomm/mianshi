@@ -1,5 +1,6 @@
 # LLM Request Batching API System Design
 
+https://www.1point3acres.com/interview/problems/post/7100012
 ## 功能需求
 
 - 提供同步 HTTP API：用户发一个 string，等待一个 string 返回。

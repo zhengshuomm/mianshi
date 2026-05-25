@@ -1,5 +1,8 @@
 # 设计 1-to-1 Chat System（完整版）
 
+https://www.1point3acres.com/interview/problems/post/7100098
+https://chatgpt.com/c/69b5f876-7b38-8331-a223-39c83f9f1029
+
 ## Phase 1: Define the Goals
 
 ### 功能需求
