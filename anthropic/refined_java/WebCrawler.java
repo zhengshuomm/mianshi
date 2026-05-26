@@ -15,7 +15,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -93,110 +92,110 @@ public class WebCrawler {
         return fragmentIndex == -1 ? url : url.substring(0, fragmentIndex);
     }
 
-    // // part 2: multi thread BFS
-    // public List<String> crawlBFS(String startUrl, HtmlParser htmlParser) {
-    //     String host = getHost(normalize(startUrl));
-
-    //     Set<String> visited = ConcurrentHashMap.newKeySet();
-    //     BlockingQueue<String> queue = new LinkedBlockingQueue<>();
-
-    //     AtomicInteger activeTasks = new AtomicInteger(1);
-
-    //     visited.add(normalize(startUrl));
-    //     queue.offer(startUrl);
-
-    //     int workers = 16;
-    //     ExecutorService executor = Executors.newFixedThreadPool(workers);
-    //     CountDownLatch done = new CountDownLatch(workers);
-
-    //     for (int i = 0; i < workers; i++) {
-    //         executor.submit(() -> {
-    //             try {
-    //                 while (true) {
-    //                     String url = queue.poll(100, TimeUnit.MILLISECONDS);
-
-    //                     if (url == null) {
-    //                         if (activeTasks.get() == 0) {
-    //                             break;
-    //                         }
-    //                         continue;
-    //                     }
-
-    //                     for (String next : htmlParser.getUrls(url)) {
-    //                         String normalizedNext = normalize(next);
-    //                         if (!getHost(normalizedNext).equals(host)) {
-    //                             continue;
-    //                         }
-
-    //                         if (visited.add(normalizedNext)) {
-    //                             activeTasks.incrementAndGet();
-    //                             queue.offer(next);
-    //                         }
-    //                     }
-
-    //                     if (activeTasks.decrementAndGet() == 0) {
-    //                         break;
-    //                     }
-    //                 }
-    //             } catch (InterruptedException e) {
-    //                 Thread.currentThread().interrupt();
-    //             } finally {
-    //                 done.countDown();
-    //             }
-    //         });
-    //     }
-
-    //     try {
-    //         done.await();
-    //     } catch (InterruptedException e) {
-    //         Thread.currentThread().interrupt();
-    //     }
-    //     executor.shutdown();
-    //     return new ArrayList<>(visited);
-    // }
-
-    // part 2: multi thread DFS
-    public List<String> crawlMulti(String startUrl, HtmlParser htmlParser) {
-        String host = getHost(startUrl);
+    // part 2: multi thread BFS
+    public List<String> crawlBFS(String startUrl, HtmlParser htmlParser) {
+        String host = getHost(normalize(startUrl));
 
         Set<String> visited = ConcurrentHashMap.newKeySet();
-        ExecutorService executor = Executors.newFixedThreadPool(16);
+        BlockingQueue<String> queue = new LinkedBlockingQueue<>();
 
-        visited.add(startUrl);
-        crawlUrl(startUrl, host, htmlParser, visited, executor);
+        AtomicInteger activeTasks = new AtomicInteger(1);
+
+        visited.add(normalize(startUrl));
+        queue.offer(startUrl);
+
+        int workers = 16;
+        ExecutorService executor = Executors.newFixedThreadPool(workers);
+        CountDownLatch done = new CountDownLatch(workers);
+
+        for (int i = 0; i < workers; i++) {
+            executor.submit(() -> {
+                try {
+                    while (true) {
+                        String url = queue.poll(100, TimeUnit.MILLISECONDS);
+
+                        if (url == null) {
+                            if (activeTasks.get() == 0) { // 这个地方不好，可以 POISON_PILL
+                                break;
+                            }
+                            continue;
+                        }
+
+                        for (String next : htmlParser.getUrls(url)) {
+                            String normalizedNext = normalize(next);
+                            if (!getHost(normalizedNext).equals(host)) {
+                                continue;
+                            }
+
+                            if (visited.add(normalizedNext)) {
+                                activeTasks.incrementAndGet();
+                                queue.offer(next);  // or normalizedNext
+                            }
+                        }
+
+                        if (activeTasks.decrementAndGet() == 0) {   // 这个要在finally里面
+                            break;
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    done.countDown();
+                }
+            });
+        }
+
+        try {
+            done.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
         executor.shutdown();
         return new ArrayList<>(visited);
     }
 
-    private void crawlUrl(
-        String url,
-        String host,
-        HtmlParser htmlParser,
-        Set<String> visited,
-        ExecutorService executor
-    ) {
-        List<Future> futures = new ArrayList<>();
+    // part 2: multi thread DFS
+    // public List<String> crawlMulti(String startUrl, HtmlParser htmlParser) {
+    //     String host = getHost(startUrl);
 
-        for (String next : htmlParser.getUrls(url)) {
-            if (!getHost(next).equals(host)) {
-                continue;
-            }
+    //     Set<String> visited = ConcurrentHashMap.newKeySet();
+    //     ExecutorService executor = Executors.newFixedThreadPool(16);
 
-            if (visited.add(next)) {
-                futures.add(executor.submit(() -> {
-                    crawlUrl(next, host, htmlParser, visited, executor);
-                }));
-            }
-        }
+    //     visited.add(startUrl);
+    //     crawlUrl(startUrl, host, htmlParser, visited, executor);
+    //     executor.shutdown();
+    //     return new ArrayList<>(visited);
+    // }
 
-        for (Future future : futures) {
-            try {
-                future.get();
-            } catch (Exception e) {
-                // LeetCode 环境下一般不会发生
-            }
-        }
-    }
+    // private void crawlUrl(
+    //     String url,
+    //     String host,
+    //     HtmlParser htmlParser,
+    //     Set<String> visited,
+    //     ExecutorService executor
+    // ) {
+    //     List<Future<?>> futures = new ArrayList<>();
+
+    //     for (String next : htmlParser.getUrls(url)) {
+    //         if (!getHost(next).equals(host)) {
+    //             continue;
+    //         }
+
+    //         if (visited.add(next)) {
+    //             futures.add(executor.submit(() -> {
+    //                 crawlUrl(next, host, htmlParser, visited, executor);
+    //             }));
+    //         }
+    //     }
+
+    //     for (Future<?> future : futures) {
+    //         try {
+    //             future.get();
+    //         } catch (Exception e) {
+    //             // LeetCode 环境下一般不会发生
+    //         }
+    //     }
+    // }
 
     private static class TestHtmlParser implements HtmlParser {
         private final Map<String, List<String>> graph = new HashMap<>();

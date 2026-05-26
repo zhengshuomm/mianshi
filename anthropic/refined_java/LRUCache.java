@@ -91,7 +91,6 @@ public class LRUCache {
     }
 
     // --- Persistence Methods ---
-
     private void appendLog(String op, String key, String value) {
         try {
             if (value == null) {

@@ -19,19 +19,24 @@ public class StringTokenization {
         List<String> result = new ArrayList<>();
 
         int i = 0;
-        while (i < text.length()) {
+        int n = text.length();
+
+        while (i < n) {
             TrieNode node = root;
             String bestId = null;
             int bestEnd = i;
 
             int j = i;
-            while (j < text.length()) {
+            while (j < n) {
                 char c = text.charAt(j);
-                if (!node.children.containsKey(c)) {
+                
+                // 优化 1：消除 containsKey 的重复查找
+                TrieNode next = node.children.get(c);
+                if (next == null) {
                     break;
                 }
 
-                node = node.children.get(c);
+                node = next;
                 j++;
 
                 if (node.id != null) {
@@ -44,6 +49,7 @@ public class StringTokenization {
                 result.add(bestId);
                 i = bestEnd;
             } else {
+                // 原有的 String.valueOf() 没问题，或者使用 Character.toString(text.charAt(i)) 也可以
                 result.add(String.valueOf(text.charAt(i)));
                 i++;
             }

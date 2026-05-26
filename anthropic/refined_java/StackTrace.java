@@ -145,7 +145,7 @@ public class StackTrace {
         return i;
     }
 
-    // Part 3: suffix 版本。从调用栈底部，也就是 leaf function 开始比较。
+    // Part 3: suffix 版本。从调用栈底部，也就是 leaf function 开始比较。  --- gemini说这个有问题
     public List<Event> convertSamplesToEventsWithSuffix(List<Sample> samples) {
         List<Event> events = new ArrayList<>();
         List<String> previous = new ArrayList<>();

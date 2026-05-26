@@ -40,11 +40,9 @@ public class FileDedup {
 
         for (File file : files) {
             long size = file.length();
-
             if (!sizeToFiles.containsKey(size)) {
                 sizeToFiles.put(size, new ArrayList<>());
             }
-
             sizeToFiles.get(size).add(file);
         }
 
@@ -55,7 +53,6 @@ public class FileDedup {
             if (sameSizeFiles.size() <= 1) {
                 continue;
             }
-
             for (File file : sameSizeFiles) {
                 try {
                     String hash = sha256(file);
@@ -63,9 +60,7 @@ public class FileDedup {
                     if (!hashToFiles.containsKey(hash)) {
                         hashToFiles.put(hash, new ArrayList<>());
                     }
-
                     hashToFiles.get(hash).add(file.getPath());
-
                 } catch (Exception e) {
                     System.err.println("Skip file: " + file.getPath());
                 }
@@ -92,60 +87,44 @@ public class FileDedup {
         **/ 
 
         List<List<String>> result = new ArrayList<>();
-
         for (List<String> group : hashToFiles.values()) {
             if (group.size() > 1) {
                 result.add(group);
             }
         }
-
         return result;
     }
 
     private static void collectFiles(File current, List<File> files) {
-        if (current.isFile()) {
-            files.add(current);
-            return;
-        }
-
-        if (!current.isDirectory()) {
-            return;
-        }
-
         File[] children = current.listFiles();
-
-        if (children == null) {
-            return;
-        }
-
+        if (children == null) return; // 处理权限不足或空目录
+        
         for (File child : children) {
-            collectFiles(child, files);
+            if (child.isFile()) {
+                files.add(child);
+            } else {
+                collectFiles(child, files); // 是目录就继续往下找
+            }
         }
     }
 
     private static String sha256(File file) throws IOException, NoSuchAlgorithmException {
-
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
 
         byte[] buffer = new byte[8192];
         try (FileInputStream input = new FileInputStream(file)) {
-
             int len;
-
             while ((len = input.read(buffer)) != -1) {
                 digest.update(buffer, 0, len);
             }
         }
 
         byte[] hashBytes = digest.digest();
-
         StringBuilder sb = new StringBuilder();
-
         for (byte b : hashBytes) {
             sb.append(String.format("%02x", b));
         }
         System.out.println(sb.toString());
-
         return sb.toString();
     }
 
