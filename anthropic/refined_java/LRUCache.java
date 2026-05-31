@@ -178,4 +178,32 @@ public class LRUCache {
     public void close() throws IOException {
         if (logWriter != null) logWriter.close();
     }
+
+    public static void main(String[] args) throws IOException {
+        String logPath = System.getProperty("java.io.tmpdir") + File.separator + "lru_cache_test.wal";
+        new File(logPath).delete();
+
+        System.out.println("=== LRU + WAL test (log: " + logPath + ") ===");
+
+        LRUCache cache = new LRUCache(2, logPath);
+        cache.put("a", "1");
+        cache.put("b", "2");
+        System.out.println("get(a) = " + cache.get("a"));           // 1, a is MRU
+        cache.put("c", "3");                                          // evicts b
+        System.out.println("get(b) = " + cache.get("b"));           // null
+        System.out.println("get(c) = " + cache.get("c"));           // 3
+        cache.put("a", "updated");
+        System.out.println("get(a) = " + cache.get("a"));           // updated
+        cache.close();
+
+        System.out.println("\n=== Recover from WAL ===");
+        LRUCache recovered = new LRUCache(2, logPath);
+        System.out.println("get(a) = " + recovered.get("a"));       // updated
+        System.out.println("get(b) = " + recovered.get("b"));       // null
+        System.out.println("get(c) = " + recovered.get("c"));       // 3
+        recovered.close();
+
+        new File(logPath).delete();
+        System.out.println("\nAll checks passed.");
+    }
 }
