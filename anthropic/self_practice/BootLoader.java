@@ -22,7 +22,7 @@ class RunResult {
     boolean success;
 
     public RunResult(int accumulate, boolean success) {
-        this.accumulate = 0;
+        this.accumulate = accumulate;
         this.success = success;
     }
 }

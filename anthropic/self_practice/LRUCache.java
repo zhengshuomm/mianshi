@@ -31,7 +31,6 @@ public class LRUCache {
     Node head;
     Node tail;
     
-
     public LRUCache(int capacity, String path) throws IOException {
         this.capacity = capacity;
         this.logPath = path;

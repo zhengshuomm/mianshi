@@ -12,6 +12,7 @@ public class FileDedup {
 
     public List<List<String>> findDuplicateFiles(String path) throws Exception {
         File root = new File(path);
+        // String content = Files.readString(file.toPath(), StandardCharsets.UTF_8);
         List<File> files = new ArrayList<>();
         collectFiles(root, files);
 
