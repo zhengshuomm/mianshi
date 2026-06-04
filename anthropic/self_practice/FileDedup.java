@@ -57,26 +57,26 @@ public class FileDedup {
         return result;
     }
 
-    private String hash256(File file, boolean lightHash) throws Exception{
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        byte[] buffer = new byte[8192];
-        try (FileInputStream input = new FileInputStream(file)) { // this one
-            int len;
-            while ((len = input.read(buffer))!= -1) {
-                digest.update(buffer, 0, len);
-                if (lightHash) {
-                    break;
-                }
-            }
-        }
+    // private String hash256(File file, boolean lightHash) throws Exception{
+    //     MessageDigest digest = MessageDigest.getInstance("SHA-256");
+    //     byte[] buffer = new byte[8192];
+    //     try (FileInputStream input = new FileInputStream(file)) { // this one
+    //         int len;
+    //         while ((len = input.read(buffer))!= -1) {
+    //             digest.update(buffer, 0, len);
+    //             if (lightHash) {
+    //                 break;
+    //             }
+    //         }
+    //     }
 
-        byte[] hashByte = digest.digest();
-        StringBuilder sb = new StringBuilder();
-        for (byte b : hashByte) {
-            sb.append(String.format("%02x", b));
-        }
-        return sb.toString();
-    }
+    //     byte[] hashByte = digest.digest();
+    //     StringBuilder sb = new StringBuilder();
+    //     for (byte b : hashByte) {
+    //         sb.append(String.format("%02x", b));
+    //     }
+    //     return sb.toString();
+    // }
 
     private void collectFiles(File root, List<File> files) {
         if (root.isFile()) {
@@ -87,6 +87,24 @@ public class FileDedup {
                 collectFiles(file, files);
             }
         }
+    }
+
+    private String hash256(File file, boolean light) throws Exception {
+        MessageDigest digest =  MessageDigest.getInstance("SHA-256");
+        
+        byte[] buffer = new byte[8192];
+        try (FileInputStream input = new FileInputStream(file)) {
+            int len;
+            while ((len = input.read(buffer)) != -1) {
+                digest.update(buffer, 0, len);
+            }
+        }
+        byte[] hashByte = digest.digest();
+        StringBuilder sb = new StringBuilder();
+        for (byte b : hashByte) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
     }
 
     

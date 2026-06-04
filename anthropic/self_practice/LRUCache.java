@@ -3,6 +3,7 @@ package anthropic.self_practice;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -87,7 +88,7 @@ public class LRUCache {
         }
     }
 
-    private void recoverFromDisk() throws IOException {
+    private void recoverFromDisk() throws FileNotFoundException, IOException  {
         try (BufferedReader reader = new BufferedReader(new FileReader(this.logPath))) {
             String line;
             while ((line = reader.readLine()) != null) {

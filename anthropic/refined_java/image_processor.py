@@ -111,7 +111,7 @@ def apply_transformation(image: Image.Image, transform: dict) -> Image.Image:
     elif transform_type == 'scale':
         factor = transform['factor']
         new_size = (int(image.width * factor), int(image.height * factor))
-        return image.resize(new_size, Image.Resampling.LANCZOS)
+        return image.resize(new_size)
     elif transform_type == 'blur':
         radius = transform['radius']
         return image.filter(ImageFilter.GaussianBlur(radius=radius))
